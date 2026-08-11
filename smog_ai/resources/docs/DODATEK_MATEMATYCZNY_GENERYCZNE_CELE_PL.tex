@@ -1,0 +1,110 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[polish]{babel}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage[a4paper,margin=2.25cm]{geometry}
+\usepackage{amsmath,amssymb,mathtools,bm}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\title{Dodatek matematyczny\\Model warunkowany horyzontem dla generycznych parametrów}
+\author{Edward Szczypka}
+\date{\today}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\R}{\mathbb{R}}
+\begin{document}
+\maketitle
+
+\section{Rodzina parametrów}
+
+Niech $\mathcal P$ będzie skończonym, konfigurowalnym zbiorem parametrów
+jakości powietrza, np.
+\[
+ \mathcal P=\{\mathrm{PM10},\mathrm{PM2.5},\mathrm{NO2},\mathrm{O3}\}.
+\]
+Dla $p\in\mathcal P$, stacji $s$, czasu bazowego $t$ i horyzontu
+$h\in\{1,\ldots,H\}$ zmienna docelowa ma postać:
+\[
+ Y^{(p)}_{s,t,h}=X^{(p)}_{s,t+h}.
+\]
+
+\section{Model wspólnego kontraktu}
+
+Każdy parametr może mieć inny provider, lecz wspólny kontrakt:
+\[
+ \widehat Y^{(p)}_{s,t,h}
+ =f_{p,\theta_p}\!\left(
+      \bm x^{(p)}_{s,t},
+      h,
+      \bm\phi(t+h),
+      \bm w_{s,t+h},
+      \bm z^{(p)}_{s,t}
+   \right),
+\]
+gdzie $\bm w$ oznacza prognozowane cechy meteorologiczne, a
+$\bm z^{(p)}$ cechy innych parametrów skonfigurowanych jako pomocnicze.
+
+\section{Cechy pomocnicze i kauzalność}
+
+Dla $q\in\mathcal A_p\subseteq\mathcal P\setminus\{p\}$ stosujemy:
+\[
+ \bm z^{(q)}_{s,t}
+ =\left(X^{(q)}_{s,t},X^{(q)}_{s,t-1},X^{(q)}_{s,t-6},X^{(q)}_{s,t-24}\right).
+\]
+Warunek kauzalności:
+\[
+ \sigma(\bm x_{s,t},\bm z_{s,t})\subseteq\mathcal F_t,
+\]
+czyli wszystkie cechy muszą być dostępne w chwili tworzenia prognozy.
+
+\section{Ograniczenia wartości}
+
+Definicja parametru zawiera zbiór dopuszczalny
+\[
+ D_p=[a_p,b_p],
+\]
+gdzie koniec może być nieskończony. Publikowana predykcja jest projekcją:
+\[
+ \widetilde Y^{(p)}=\Pi_{D_p}(\widehat Y^{(p)}).
+\]
+Zapobiega to wspólnemu, błędnemu założeniu, że wszystkie parametry mają ten sam
+zakres lub jednostkę.
+
+\section{Ważona funkcja celu}
+
+Dla próbki $\mathcal I_p$:
+\[
+ \mathcal L_p(\theta_p)
+ =\sum_{i\in\mathcal I_p}w_i\,
+   \ell_p\!\left(y_i,f_{p,\theta_p}(x_i,h_i)\right),
+\]
+przy czym waga może uwzględniać świeżość, stację, horyzont i rzadkie epizody.
+Provider wybiera $\ell_p$ zgodnie z charakterem parametru; rejestr nie wymusza
+jednego estymatora ani jednej funkcji straty.
+
+\section{Brama jakości}
+
+Kandydat parametru $p$ zastępuje model aktywny wyłącznie, gdy na późniejszym
+okresie chronologicznym:
+\[
+ \frac{\operatorname{MAE}_{\mathrm{baseline},p}
+       -\operatorname{MAE}_{\mathrm{candidate},p}}
+      {\operatorname{MAE}_{\mathrm{baseline},p}}
+ \ge \eta_p.
+\]
+Wartość $\eta_p$ może być parametryzowana oddzielnie dla każdego parametru.
+
+\section{Skalowalność}
+
+Dodanie parametru do katalogu nie zwiększa kosztu ML. Koszt powstaje dopiero po
+włączeniu roli celu. Dla zbioru celów $\mathcal T$ koszt treningu jest w
+przybliżeniu:
+\[
+ C\approx\sum_{p\in\mathcal T}
+   N_p\,K_p\,F_p,
+\]
+gdzie $N_p$ jest ograniczoną liczbą rekordów, $K_p$ liczbą kandydatów, a
+$F_p$ liczbą foldów. Profile quick/full ograniczają każdy z tych czynników.
+
+\end{document}

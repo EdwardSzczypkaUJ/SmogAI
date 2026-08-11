@@ -1,0 +1,28 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[polish]{babel}
+\usepackage{lmodern}
+\usepackage[a4paper,margin=2.4cm]{geometry}
+\usepackage{amsmath}
+\title{HF20.4: idempotentna publikacja niezmiennych artefaktów modelu}
+\author{Edward Szczypka}
+\date{\today}
+\begin{document}
+\maketitle
+\section{Problem}
+Klucz wersjonowany powinien spełniać
+\[
+P(v,m)=P(v,m),
+\]
+czyli wielokrotna publikacja tej samej wersji $v$ i modelu $m$ musi tworzyć
+identyczny ładunek. Pole czasu publikacji naruszało tę własność.
+\section{Rozdzielenie danych}
+Karta wersji zawiera wyłącznie dane wewnętrzne modelu. Czas publikacji i dane
+transportowe są zapisywane w mutowalnym wskaźniku aktywnej wersji. Legacy
+ładunki są uznawane za równoważne tylko po usunięciu znanych pól transportowych:
+\[
+\{\texttt{published\_at},\;\texttt{metrics.remote\_artifact}\}.
+\]
+Każda inna różnica nadal powoduje konflikt integralności.
+\end{document}

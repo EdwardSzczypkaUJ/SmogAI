@@ -1,0 +1,147 @@
+name,latitude,longitude,population,aliases,country_code,source
+Warszawa,52.2297,21.0122,1860000,warsaw,PL,curated_offline_gazetteer
+Kraków,50.0647,19.945,804000,krakow|krakowie,PL,curated_offline_gazetteer
+Wrocław,51.1079,17.0385,674000,wroclaw|wroclawiu,PL,curated_offline_gazetteer
+Łódź,51.7592,19.456,655000,lodz|lodzi,PL,curated_offline_gazetteer
+Poznań,52.4064,16.9252,541000,poznan|poznaniu,PL,curated_offline_gazetteer
+Gdańsk,54.352,18.6466,486000,gdansk|gdansku,PL,curated_offline_gazetteer
+Szczecin,53.4285,14.5528,391000,szczecinie,PL,curated_offline_gazetteer
+Lublin,51.2465,22.5684,331000,lublinie,PL,curated_offline_gazetteer
+Bydgoszcz,53.1235,18.0084,330000,bydgoszczy,PL,curated_offline_gazetteer
+Białystok,53.1325,23.1688,292000,bialystok|bialymstoku,PL,curated_offline_gazetteer
+Katowice,50.2649,19.0238,279000,katowic|katowicach,PL,curated_offline_gazetteer
+Gdynia,54.5189,18.5305,243000,gdyni,PL,curated_offline_gazetteer
+Częstochowa,50.8118,19.1203,213000,czestochowa|czestochowie,PL,curated_offline_gazetteer
+Rzeszów,50.0412,21.9991,198000,rzeszow|rzeszowie,PL,curated_offline_gazetteer
+Toruń,53.0138,18.5984,197000,torun|toruniu,PL,curated_offline_gazetteer
+Radom,51.4027,21.1471,197000,radomiu,PL,curated_offline_gazetteer
+Sosnowiec,50.2863,19.1041,187000,sosnowcu,PL,curated_offline_gazetteer
+Kielce,50.8661,20.6286,183000,kielcach,PL,curated_offline_gazetteer
+Gliwice,50.2945,18.6714,174000,gliwicach,PL,curated_offline_gazetteer
+Olsztyn,53.7784,20.4801,168000,olsztynie,PL,curated_offline_gazetteer
+Bielsko-Biała,49.8224,19.0444,166000,bielsko biala|bielsku bialej,PL,curated_offline_gazetteer
+Zabrze,50.3249,18.7857,153000,zabrzu,PL,curated_offline_gazetteer
+Bytom,50.3484,18.9157,150000,bytomiu,PL,curated_offline_gazetteer
+Zielona Góra,51.9356,15.5062,139000,zielona gora|zielonej gorze,PL,curated_offline_gazetteer
+Rybnik,50.1022,18.5463,132000,rybniku,PL,curated_offline_gazetteer
+Ruda Śląska,50.2558,18.8556,131000,ruda slaska|rudzie slaskiej,PL,curated_offline_gazetteer
+Opole,50.6751,17.9213,127000,opolu,PL,curated_offline_gazetteer
+Tychy,50.1372,18.9664,126000,tychach,PL,curated_offline_gazetteer
+Gorzów Wielkopolski,52.7368,15.2288,120000,gorzow wielkopolski|gorzowie wielkopolskim,PL,curated_offline_gazetteer
+Dąbrowa Górnicza,50.3217,19.1949,116000,dabrowa gornicza|dabrowie gorniczej,PL,curated_offline_gazetteer
+Elbląg,54.1561,19.4045,115000,elblag|elblagu,PL,curated_offline_gazetteer
+Płock,52.5468,19.7064,113000,plock|plocku,PL,curated_offline_gazetteer
+Koszalin,54.1943,16.1722,105000,koszalinie,PL,curated_offline_gazetteer
+Wałbrzych,50.7714,16.2843,103000,walbrzych|walbrzychu,PL,curated_offline_gazetteer
+Mieroszów,50.66694,16.18972,4000,mieroszow|mieroszowie,PL,curated_offline_gazetteer
+Lotnisko Witków EPDS,50.79686,16.11448,,lotnisko witkow|ladowisko witkow|witkow airfield|epds,PL,curated_verified_poi
+Włocławek,52.6483,19.0678,102000,wloclawek|wloclawku,PL,curated_offline_gazetteer
+Tarnów,50.0121,20.9858,101000,tarnow|tarnowie,PL,curated_offline_gazetteer
+Chorzów,50.2976,18.9546,100000,chorzow|chorzowie,PL,curated_offline_gazetteer
+Kalisz,51.7611,18.091,97000,kaliszu,PL,curated_offline_gazetteer
+Legnica,51.207,16.1619,96000,legnicy,PL,curated_offline_gazetteer
+Grudziądz,53.4837,18.7536,91000,grudziadz|grudziadzu,PL,curated_offline_gazetteer
+Jaworzno,50.2053,19.2749,89000,jaworznie,PL,curated_offline_gazetteer
+Słupsk,54.4641,17.0287,88000,slupsk|slupsku,PL,curated_offline_gazetteer
+Jastrzębie-Zdrój,49.9454,18.6101,87000,jastrzebie zdroj|jastrzebiu zdroju,PL,curated_offline_gazetteer
+Nowy Sącz,49.6218,20.697,80000,nowy sacz|nowym saczu,PL,curated_offline_gazetteer
+Jelenia Góra,50.9044,15.7194,76000,jelenia gora|jeleniej gorze,PL,curated_offline_gazetteer
+Siedlce,52.1676,22.2902,76000,siedlcach,PL,curated_offline_gazetteer
+Mysłowice,50.2075,19.1661,74000,myslowice|myslowicach,PL,curated_offline_gazetteer
+Konin,52.223,18.2511,70000,koninie,PL,curated_offline_gazetteer
+Piła,53.1515,16.7382,70000,pila|pile,PL,curated_offline_gazetteer
+Piotrków Trybunalski,51.4052,19.703,69000,piotrkow trybunalski|piotrkowie trybunalskim,PL,curated_offline_gazetteer
+Inowrocław,52.7993,18.2562,69000,inowroclaw|inowroclawiu,PL,curated_offline_gazetteer
+Lubin,51.3977,16.2096,69000,lubinie,PL,curated_offline_gazetteer
+Ostrów Wielkopolski,51.655,17.8069,69000,ostrow wielkopolski|ostrowie wielkopolskim,PL,curated_offline_gazetteer
+Suwałki,54.1115,22.9308,69000,suwalki|suwalkach,PL,curated_offline_gazetteer
+Gniezno,52.5349,17.5827,68000,gnieznie,PL,curated_offline_gazetteer
+Stargard,53.3367,15.0499,67000,stargardzie,PL,curated_offline_gazetteer
+Głogów,51.6636,16.0847,65000,glogow|glogowie,PL,curated_offline_gazetteer
+Ostrowiec Świętokrzyski,50.9294,21.3853,64000,ostrowiec swietokrzyski|ostrowcu swietokrzyskim,PL,curated_offline_gazetteer
+Siemianowice Śląskie,50.3274,19.029,64000,siemianowice slaskie|siemianowicach slaskich,PL,curated_offline_gazetteer
+Pabianice,51.6645,19.3547,63000,pabianicach,PL,curated_offline_gazetteer
+Leszno,51.8419,16.5749,62000,lesznie,PL,curated_offline_gazetteer
+Żory,50.0457,18.7006,61000,zory|zorach,PL,curated_offline_gazetteer
+Zamość,50.7231,23.2519,59000,zamosc|zamosciu,PL,curated_offline_gazetteer
+Pruszków,52.1705,20.8121,65000,pruszkow|pruszkowie,PL,curated_offline_gazetteer
+Łomża,53.1781,22.0594,62000,lomza|lomzy,PL,curated_offline_gazetteer
+Ełk,53.8281,22.3645,61000,elk|elku,PL,curated_offline_gazetteer
+Chełm,51.1431,23.4712,60000,chelm|chelmie,PL,curated_offline_gazetteer
+Mielec,50.2871,21.4239,60000,mielcu,PL,curated_offline_gazetteer
+Tomaszów Mazowiecki,51.5313,20.0084,60000,tomaszow mazowiecki|tomaszowie mazowieckim,PL,curated_offline_gazetteer
+Bełchatów,51.3688,19.3567,55000,belchatow|belchatowie,PL,curated_offline_gazetteer
+Biała Podlaska,52.0324,23.1165,55000,biala podlaska|bialej podlaskiej,PL,curated_offline_gazetteer
+Będzin,50.325,19.125,54000,bedzin|bedzinie,PL,curated_offline_gazetteer
+Racibórz,50.0919,18.2193,53000,raciborz|raciborzu,PL,curated_offline_gazetteer
+Świętochłowice,50.2964,18.9173,50000,swietochlowice|swietochlowicach,PL,curated_offline_gazetteer
+Wejherowo,54.6057,18.2356,50000,wejherowie,PL,curated_offline_gazetteer
+Zgierz,51.8556,19.4062,55000,zgierzu,PL,curated_offline_gazetteer
+Oświęcim,50.0344,19.2104,38000,oswiecim|oswiecimiu,PL,curated_offline_gazetteer
+Zakopane,49.2992,19.9496,27000,zakopanem,PL,curated_offline_gazetteer
+Nowy Targ,49.4775,20.0323,33000,nowy targ|nowym targu,PL,curated_offline_gazetteer
+Wadowice,49.8834,19.4929,19000,wadowicach,PL,curated_offline_gazetteer
+Skawina,49.9752,19.8287,24000,skawinie,PL,curated_offline_gazetteer
+Wieliczka,49.9871,20.0647,27000,wieliczce,PL,curated_offline_gazetteer
+Chrzanów,50.1355,19.402,35000,chrzanow|chrzanowie,PL,curated_offline_gazetteer
+Bochnia,49.9691,20.4303,30000,bochni,PL,curated_offline_gazetteer
+Nowa Huta,50.0726,20.0378,200000,nowej hucie,PL,curated_offline_gazetteer
+Krynica-Zdrój,49.4215,20.9594,11000,krynica zdroj|krynicy zdroju,PL,curated_offline_gazetteer
+Krosno,49.6887,21.7706,45000,krosnie,PL,curated_offline_gazetteer
+Przemyśl,49.7839,22.7678,58000,przemysl|przemyslu,PL,curated_offline_gazetteer
+Sanok,49.555,22.2056,36000,sanoku,PL,curated_offline_gazetteer
+Bielsko,49.8224,19.0444,166000,bielsku,PL,curated_offline_gazetteer
+Cieszyn,49.7485,18.6332,33000,cieszynie,PL,curated_offline_gazetteer
+Żywiec,49.6853,19.1924,31000,zywiec|zywcu,PL,curated_offline_gazetteer
+Nowy Dwór Mazowiecki,52.4302,20.7165,29000,nowy dwor mazowiecki|nowym dworze mazowieckim,PL,curated_offline_gazetteer
+Mińsk Mazowiecki,52.1794,21.5721,41000,minsk mazowiecki|minsku mazowieckim,PL,curated_offline_gazetteer
+Otwock,52.1058,21.2613,45000,otwocku,PL,curated_offline_gazetteer
+Sopot,54.4416,18.5601,35000,sopocie,PL,curated_offline_gazetteer
+Hel,54.6081,18.8013,10000,helu,PL,curated_offline_gazetteer
+Władysławowo,54.7909,18.4009,10000,wladyslawowo|wladyslawowie,PL,curated_offline_gazetteer
+Jastrzębia Góra,54.831,18.313,1000,jastrzebia gora|jastrzebiej gorze,PL,curated_offline_gazetteer
+Ustka,54.5805,16.8619,15000,ustce,PL,curated_offline_gazetteer
+Kołobrzeg,54.1757,15.5833,45000,kolobrzeg|kolobrzegu,PL,curated_offline_gazetteer
+Świnoujście,53.91,14.2476,40000,swinoujscie|swinoujsciu,PL,curated_offline_gazetteer
+Malbork,54.0359,19.0266,38000,malborku,PL,curated_offline_gazetteer
+Kwidzyn,53.7358,18.9313,38000,kwidzynie,PL,curated_offline_gazetteer
+Brodnica,53.2597,19.3965,28000,brodnicy,PL,curated_offline_gazetteer
+Augustów,53.8434,22.9796,30000,augustow|augustowie,PL,curated_offline_gazetteer
+Giżycko,54.04,21.7587,29000,gizycko|gizycku,PL,curated_offline_gazetteer
+Mrągowo,53.8644,21.305,21000,mragowo|mragowie,PL,curated_offline_gazetteer
+Szczytno,53.5626,20.9875,23000,szczytnie,PL,curated_offline_gazetteer
+Puławy,51.4164,21.9694,46000,pulawy|pulawach,PL,curated_offline_gazetteer
+Tarnobrzeg,50.573,21.6794,45000,tarnobrzegu,PL,curated_offline_gazetteer
+Stalowa Wola,50.5829,22.0533,58000,stalowej woli,PL,curated_offline_gazetteer
+Sandomierz,50.6827,21.7489,23000,sandomierzu,PL,curated_offline_gazetteer
+Kędzierzyn-Koźle,50.3498,18.2261,59000,kedzierzyn kozle|kedzierzynie kozlu,PL,curated_offline_gazetteer
+Nysa,50.4741,17.3344,43000,nysie,PL,curated_offline_gazetteer
+Kłodzko,50.4346,16.6615,25000,klodzko|klodzku,PL,curated_offline_gazetteer
+Świdnica,50.8498,16.4757,56000,swidnica|swidnicy,PL,curated_offline_gazetteer
+Bolesławiec,51.264,15.5698,38000,boleslawiec|boleslawcu,PL,curated_offline_gazetteer
+Głubczyce,50.2009,17.8298,12000,glubczyce|glubczycach,PL,curated_offline_gazetteer
+Sieradz,51.5958,18.7302,40000,sieradzu,PL,curated_offline_gazetteer
+Skierniewice,51.9547,20.1584,47000,skierniewicach,PL,curated_offline_gazetteer
+Kutno,52.2306,19.3641,43000,kutnie,PL,curated_offline_gazetteer
+Ciechanów,52.8814,20.6199,44000,ciechanow|ciechanowie,PL,curated_offline_gazetteer
+Ostrołęka,53.0877,21.5593,51000,ostroleka|ostrolece,PL,curated_offline_gazetteer
+Płońsk,52.6235,20.3755,22000,plonsk|plonsku,PL,curated_offline_gazetteer
+Piaseczno,52.0814,21.0249,50000,piasecznie,PL,curated_offline_gazetteer
+Grodzisk Mazowiecki,52.1039,20.6266,34000,grodzisk mazowiecki|grodzisku mazowieckim,PL,curated_offline_gazetteer
+Wołomin,52.3406,21.2426,37000,wolomin|wolominie,PL,curated_offline_gazetteer
+Piastów,52.1843,20.8395,23000,piastow|piastowie,PL,curated_offline_gazetteer
+Śrem,52.0887,17.0151,30000,srem|sremie,PL,curated_offline_gazetteer
+Września,52.3251,17.5652,30000,wrzesnia|wrzesni,PL,curated_offline_gazetteer
+Krotoszyn,51.6987,17.4374,29000,krotoszynie,PL,curated_offline_gazetteer
+Jarocin,51.9727,17.5026,26000,jarocinie,PL,curated_offline_gazetteer
+Kościan,52.0881,16.6487,24000,koscian|koscianie,PL,curated_offline_gazetteer
+Rawicz,51.6095,16.8585,21000,rawiczu,PL,curated_offline_gazetteer
+Świecie,53.4093,18.4477,25000,swiecie|swieciu,PL,curated_offline_gazetteer
+Tczew,54.0924,18.7779,59000,tczewie,PL,curated_offline_gazetteer
+Starogard Gdański,53.9639,18.5264,48000,starogard gdanski|starogardzie gdanskim,PL,curated_offline_gazetteer
+Lębork,54.5392,17.7501,35000,lebork|leborku,PL,curated_offline_gazetteer
+Chojnice,53.695,17.557,39000,chojnicach,PL,curated_offline_gazetteer
+Słubice,52.3508,14.5607,16000,slubicach,PL,curated_offline_gazetteer
+Żagań,51.6176,15.3149,25000,zagan|zaganiu,PL,curated_offline_gazetteer
+Żary,51.642,15.1373,38000,zary|zarach,PL,curated_offline_gazetteer
+Kostrzyn nad Odrą,52.5874,14.6496,18000,kostrzyn nad odra|kostrzynie nad odra,PL,curated_offline_gazetteer

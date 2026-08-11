@@ -1,0 +1,548 @@
+environment: production
+display_timezone: Europe/Warsaw
+source_host_id: windows-collector
+
+# Ścieżki względne są rozwiązywane względem katalogu runtime
+# (domyślnie %ProgramData%\SmogAI), nie katalogu repozytorium.
+paths:
+  data_dir: data
+  database_path: data/smog.db
+  models_dir: models
+  snapshots_dir: snapshots
+  logs_dir: logs
+  backups_dir: backups
+  temp_dir: tmp
+  imgw_metadata_csv: smog_ai/resources/imgw_synop_stations.csv
+
+api:
+  gios_base_url: https://api.gios.gov.pl/pjp-api/v1/rest
+  imgw_synop_url: https://danepubliczne.imgw.pl/api/data/synop
+  connect_timeout_seconds: 10
+  read_timeout_seconds: 45
+  max_retries: 4
+  backoff_base_seconds: 1.0
+  user_agent: GIOS-IMGW-Forecast-Suite/1.7.0
+  gios_page_size: 500
+  gios_request_interval_seconds: 0.05
+  gios_naive_time_zone: Europe/Warsaw
+  imgw_naive_time_zone: UTC
+  # Bieżące pole suma_opadu jest traktowane jako akumulacja, nie wymyślone mm/h.
+  imgw_live_precipitation_accumulation_period_hours: 6
+
+# Oficjalne miesięczne archiwa terminowe/SYNOP IMGW.
+imgw_archive:
+  enabled: true
+  run_on_first_run: true
+  base_url: https://danepubliczne.imgw.pl/data/dane_pomiarowo_obserwacyjne/dane_meteorologiczne/terminowe/synop
+  header_url: https://danepubliczne.imgw.pl/data/dane_pomiarowo_obserwacyjne/dane_meteorologiczne/terminowe/synop/s_t_nag%C5%82%C3%B3wek.csv
+  lookback_months: 24
+  start_year: null
+  end_year: null
+  max_files_per_run: 0
+  station_ids: []
+  cache_dir: imgw-archive-cache
+  source_timezone: UTC
+  precipitation_accumulation_period_hours: 6
+  request_interval_seconds: 0.05
+  temperature_code: TEMP
+  humidity_code: WLGW
+  pressure_codes: [HPOW, HPON, HPOD]
+  precipitation_code: WO6G
+  wind_speed_code: FWR
+  wind_direction_code: KRWR
+  skip_unchanged_cached_files: true
+
+quality:
+  stale_air_hours: 4
+  stale_weather_hours: 4
+  max_station_match_km: 80.0
+  spike_absolute_pm10: 150.0
+  spike_absolute_pm25: 100.0
+  verify_tolerance_minutes: 90
+
+data_validation:
+  enabled: true
+  require_pandera: true
+  lazy: true
+  operational_policy: report
+  training_policy: fail
+  snapshot_policy: fail
+  max_failure_cases: 500
+  reports_dir: validation-reports
+
+# Bridge storage: DigitalOcean Spaces jest konfiguracją zadania, ale można
+# podłączyć local, memory, AWS S3 albo MinIO bez zmiany pipeline’u.
+object_storage:
+  enabled: true
+  backend: spaces
+  local_root: object-store
+  bucket: ${SPACES_BUCKET}
+  endpoint_url: ${SPACES_ENDPOINT_URL}
+  region: ${SPACES_REGION}
+  prefix: ${SPACES_PREFIX}
+  access_key_env: SPACES_ACCESS_KEY_ID
+  secret_key_env: SPACES_SECRET_ACCESS_KEY
+  verify_tls: true
+  addressing_style: virtual
+  connect_timeout_seconds: 10
+  read_timeout_seconds: 60
+  max_attempts: 5
+
+artifacts:
+  schema_version: '1'
+  operational_export_days: 1095
+  export_after_collection: true
+  export_training_frames_before_training: true
+  upload_models: true
+
+# Bridge przepływu danych.
+# direct_local: SQLite -> lokalny trening (bez wymaganego round-tripu chmurowego)
+# object_store_roundtrip: SQLite -> ObjectStore -> lokalny trening
+# Backend ObjectStore może być local, spaces, s3 albo memory.
+data_flow:
+  training_mode: object_store_roundtrip
+  mirror_operational_to_object_store: true
+  # local: źródło -> lokalny cache
+  # object_store: ObjectStore/Spaces jest kanonicznym cache
+  # hybrid: lokalny cache -> ObjectStore -> źródło
+  history_cache_mode: local
+  history_cache_prefix: source-cache/gios-history
+
+# Niezmienny snapshot treningowy SQLite. Import może dalej zapisywać do
+# data/smog.db, podczas gdy model czyta spójną kopię z training-datasets.
+training_snapshot:
+  enabled: true
+  root_dir: training-datasets
+  # auto: utwórz nowy snapshot (lub użyj świeżego zgodnie z reuse_latest_minutes)
+  # latest: użyj ostatniego snapshotu profilu
+  # live: tryb diagnostyczny, czytaj żywą bazę
+  default_selector: auto
+  reuse_latest_minutes: 0
+  # Do Spaces trafia mały manifest proweniencji; sama baza pozostaje lokalna.
+  mirror_manifest_to_object_storage: true
+  backup_pages: 4096
+  backup_sleep_seconds: 0.01
+  # Fail fast instead of showing a frozen percentage indefinitely when an
+  # external writer repeatedly changes the source SQLite database.
+  backup_stall_seconds: 180
+  backup_max_restarts: 3
+  retain_quick: 8
+  retain_full: 4
+
+# Centralny rejestr parametrów jakości powietrza.
+# Role są niezależne: można pobierać i audytować NO2/O3 bez automatycznego
+# tworzenia modeli. Dopiero forecast_target + wpis w hourly_forecasting.targets
+# włącza cel ML; spatial_surface kontroluje publikację mapy.
+air_parameters:
+  # metadata_only: nieznane sensory zapisujemy w katalogu, ale nie pobieramy
+  # ich wartości. collect pozwala zbierać także nieznane kody do audytu.
+  unknown_sensor_policy: metadata_only
+  parameters:
+    PM10:
+      enabled: true
+      display_name: Pył zawieszony PM10
+      aliases: [PM10, PYŁ ZAWIESZONY PM10]
+      canonical_unit: µg/m³
+      cadence_hours: 1
+      collect_current: true
+      historical_backfill: true
+      forecast_target: true
+      auxiliary_feature: true
+      spatial_surface: true
+      allow_negative: false
+      valid_min: 0
+      valid_max: null
+      exceedance_threshold: 50
+      spike_absolute: 150
+      annual_api_indicator: PM10
+      prepared_archive_tokens: [PM10]
+      algorithms: [persistence, historical_mean, ridge, polynomial_ridge, hist_gradient_boosting, mlp]
+    PM2.5:
+      enabled: true
+      display_name: Pył zawieszony PM2.5
+      aliases: [PM2.5, PM25, 'PM2,5', PYŁ ZAWIESZONY PM2.5]
+      canonical_unit: µg/m³
+      cadence_hours: 1
+      collect_current: true
+      historical_backfill: true
+      forecast_target: true
+      auxiliary_feature: true
+      spatial_surface: true
+      allow_negative: false
+      valid_min: 0
+      valid_max: null
+      exceedance_threshold: 25
+      spike_absolute: 100
+      annual_api_indicator: PM2.5
+      prepared_archive_tokens: [PM25, PM2.5, 'PM2,5']
+      algorithms: [persistence, historical_mean, ridge, polynomial_ridge, hist_gradient_boosting, mlp]
+    NO2:
+      enabled: true
+      display_name: Dwutlenek azotu
+      aliases: [NO2, NO₂, DWUTLENEK AZOTU]
+      canonical_unit: µg/m³
+      cadence_hours: 1
+      collect_current: false
+      historical_backfill: false
+      forecast_target: false
+      auxiliary_feature: false
+      spatial_surface: false
+      allow_negative: false
+      valid_min: 0
+      valid_max: null
+      exceedance_threshold: null
+      spike_absolute: null
+      annual_api_indicator: NO2
+      prepared_archive_tokens: [NO2]
+    SO2:
+      enabled: true
+      display_name: Dwutlenek siarki
+      aliases: [SO2, SO₂, DWUTLENEK SIARKI]
+      canonical_unit: µg/m³
+      cadence_hours: 1
+      collect_current: false
+      historical_backfill: false
+      forecast_target: false
+      auxiliary_feature: false
+      spatial_surface: false
+      allow_negative: false
+      valid_min: 0
+      valid_max: null
+      annual_api_indicator: SO2
+      prepared_archive_tokens: [SO2]
+    O3:
+      enabled: true
+      display_name: Ozon
+      aliases: [O3, O₃, OZON]
+      canonical_unit: µg/m³
+      cadence_hours: 1
+      collect_current: false
+      historical_backfill: false
+      forecast_target: false
+      auxiliary_feature: false
+      spatial_surface: false
+      allow_negative: false
+      valid_min: 0
+      valid_max: null
+      annual_api_indicator: O3
+      prepared_archive_tokens: [O3]
+    CO:
+      enabled: true
+      display_name: Tlenek węgla
+      aliases: [CO, TLENEK WĘGLA, TLENEK WEGLA]
+      canonical_unit: mg/m³
+      cadence_hours: 1
+      collect_current: false
+      historical_backfill: false
+      forecast_target: false
+      auxiliary_feature: false
+      spatial_surface: false
+      allow_negative: false
+      valid_min: 0
+      valid_max: null
+      annual_api_indicator: CO
+      prepared_archive_tokens: [CO]
+    C6H6:
+      enabled: true
+      display_name: Benzen
+      aliases: [C6H6, C₆H₆, BENZEN]
+      canonical_unit: µg/m³
+      cadence_hours: 1
+      collect_current: false
+      historical_backfill: false
+      forecast_target: false
+      auxiliary_feature: false
+      spatial_surface: false
+      allow_negative: false
+      valid_min: 0
+      valid_max: null
+      annual_api_indicator: C6H6
+      prepared_archive_tokens: [C6H6, BENZEN]
+    'NO':
+      enabled: true
+      display_name: Tlenek azotu
+      aliases: ['NO', TLENEK AZOTU]
+      canonical_unit: µg/m³
+      cadence_hours: 1
+      collect_current: false
+      historical_backfill: false
+      forecast_target: false
+      auxiliary_feature: false
+      spatial_surface: false
+      allow_negative: false
+      valid_min: 0
+      valid_max: null
+      annual_api_indicator: 'NO'
+      prepared_archive_tokens: ['NO']
+    NOX:
+      enabled: true
+      display_name: Tlenki azotu
+      aliases: [NOX, NOx, TLENKI AZOTU]
+      canonical_unit: µg/m³
+      cadence_hours: 1
+      collect_current: false
+      historical_backfill: false
+      forecast_target: false
+      auxiliary_feature: false
+      spatial_surface: false
+      allow_negative: false
+      valid_min: 0
+      valid_max: null
+      annual_api_indicator: NOx
+      prepared_archive_tokens: [NOX, NOx]
+
+# Konfiguracja legacy pozostaje dla jawnego fallbacku 6/12/24 h.
+training:
+  horizons_hours: [6, 12, 24]
+  parameters: [PM10, PM2.5]
+  minimum_training_rows: 200
+  validation_fraction: 0.2
+  minimum_mae_improvement_fraction: 0.01
+  algorithms: [persistence, historical_mean, hist_gradient_boosting, mlp]
+  random_state: 42
+  max_training_days: 730
+  input_source: object_store
+  allow_database_fallback: false
+
+# Otwarta platforma ModelProvider.
+model_platform:
+  entry_point_group: smog_ai.model_providers
+  discover_entry_points: true
+  plugin_modules: []
+  external_factories: []
+  method_parameters:
+    polynomial_ridge:
+      degree: 2
+      alpha: 1.0
+    hist_gradient_boosting:
+      learning_rate: 0.05
+      max_iter: 260
+      max_leaf_nodes: 31
+    mlp:
+      hidden_layer_sizes: [64, 32]
+      max_iter: 500
+
+# Główny tryb 1.7.0: dokładne horyzonty godzinowe i cztery cele.
+hourly_forecasting:
+  enabled: true
+  # Model horizon is measured from the latest common source time. Serving
+  # always exposes exactly 48 future full hours. A 12 h source-delay reserve
+  # therefore requires model horizons through h60.
+  minimum_horizon_hours: 1
+  maximum_horizon_hours: 48
+  serving_horizon_hours: 48
+  maximum_source_delay_hours: 12
+  maximum_model_horizon_hours: 60
+  step_hours: 1
+  targets: [PM10, PM2.5, temperature_c, precipitation_mm]
+  spatial_targets:
+    [PM10, PM2.5, temperature_c, precipitation_probability, precipitation_mm]
+  default_air_target_algorithms:
+    [persistence, historical_mean, ridge, polynomial_ridge, hist_gradient_boosting, mlp]
+  target_algorithms:
+    PM10:
+      [persistence, historical_mean, ridge, polynomial_ridge, hist_gradient_boosting, mlp]
+    PM2.5:
+      [persistence, historical_mean, ridge, polynomial_ridge, hist_gradient_boosting, mlp]
+    temperature_c:
+      [persistence, historical_mean, ridge, polynomial_ridge, hist_gradient_boosting, mlp]
+    precipitation_mm: [hurdle_hist_gradient_boosting]
+  quantile_method: hist_gradient_boosting_quantile
+  quantiles: [0.10, 0.50, 0.90]
+  minimum_training_rows: 500
+  minimum_unique_origin_times: 72
+  validation_fraction: 0.20
+  minimum_mae_improvement_fraction: 0.01
+  cross_fit_folds: 4
+  maximum_training_days: 1095
+  # Limit the long h1--h48 frame before model fitting. Origins are sampled
+  # deterministically and proportionally per station; exact future targets are
+  # still joined from the complete source series.
+  maximum_training_rows_per_target: 1000000
+  random_state: 42
+  exact_target_time_required: true
+  temporal_interpolation: pchip
+  allow_temporal_extrapolation: false
+  use_predicted_weather_for_pm: true
+
+  # Bridge wyboru zbioru uczącego. Pełna historia pozostaje w SQLite/Spaces,
+  # a pojedynczy trening otrzymuje kontrolowane okno, próbę warstwową i budżet.
+  training_policy:
+    strategy: bounded_rolling_stratified
+    default_profile: quick
+    rare_event_quantile: 0.90
+    recency_half_life_days: 180
+    quick:
+      maximum_training_days_by_target:
+        PM10: 365
+        PM2.5: 365
+        temperature_c: 730
+        precipitation_mm: 730
+      maximum_rows_per_target: 250000
+      validation_max_rows: 60000
+      always_keep_recent_days: 90
+      horizon_bucket_edges: [6, 12, 24, 48, 60]
+      samples_per_horizon_bucket: 2
+      cross_fit_folds: 2
+      algorithms:
+        PM10: [persistence, ridge, hist_gradient_boosting]
+        PM2.5: [persistence, ridge, hist_gradient_boosting]
+        temperature_c: [persistence, ridge]
+        precipitation_mm: [hurdle_hist_gradient_boosting]
+      fit_quantiles: false
+      max_wall_time_seconds: 1800
+    full:
+      maximum_training_days_by_target:
+        PM10: 730
+        PM2.5: 730
+        temperature_c: 1095
+        precipitation_mm: 1095
+      maximum_rows_per_target: 600000
+      validation_max_rows: 120000
+      always_keep_recent_days: 120
+      horizon_bucket_edges: [6, 12, 24, 48, 60]
+      samples_per_horizon_bucket: 3
+      cross_fit_folds: 4
+      algorithms: {}
+      fit_quantiles: true
+      max_wall_time_seconds: 7200
+
+  # Lekki model reszt aktualizowany na zweryfikowanych prognozach.
+  incremental_residual:
+    enabled: true
+    minimum_verified_rows: 500
+    maximum_rows_per_update: 50000
+    lookback_days: 120
+    minimum_mae_improvement_fraction: 0.01
+    alpha: 0.0001
+    eta0: 0.01
+    random_state: 42
+
+  drift:
+    enabled: true
+    recent_window_rows: 500
+    reference_window_rows: 1500
+    minimum_verified_rows: 250
+    mae_relative_increase_threshold: 0.20
+    bias_absolute_thresholds:
+      PM10: 8.0
+      PM2.5: 5.0
+      temperature_c: 2.5
+      precipitation_mm: 2.0
+
+  precipitation:
+    occurrence_threshold_mm: 0.1
+    accumulation_period_hours: 6
+    provider: hurdle_hist_gradient_boosting
+    minimum_positive_rows: 20
+    minimum_mae_improvement_vs_persistence: 0.01
+    minimum_brier_skill_vs_climatology: 0.0
+    minimum_brier_skill_vs_persistence: 0.0
+    minimum_roc_auc: 0.60
+    maximum_absolute_bias_mm: 1.0
+    mark_experimental_on_failure: true
+    activate_experimental_locally: true
+
+documentation:
+  enabled: true
+  publish_to_object_storage: true
+  platform_title: Dokumentacja Smog AI 1.7.0
+  processing_markdown: docs/platform/TECHNICAL_PROCESSING_PL.md
+  processing_latex: docs/latex/DOKUMENTACJA_TECHNICZNA_PRZETWARZANIA_PL.tex
+  mathematics_markdown: docs/platform/MATHEMATICAL_MODEL_PL.md
+  model_plugin_markdown: docs/platform/MODEL_PLUGIN_GUIDE_PL.md
+  mathematics_latex: docs/latex/DOKUMENTACJA_MODELU_GODZINOWEGO_PL.tex
+  hf20_markdown: docs/platform/HF20_TIME_CONTRACT_MLOPS_PL.md
+  hf20_latex: docs/latex/DODATEK_TECHNICZNY_HF20_TIME_CONTRACT_MLOPS_PL.tex
+
+# Powierzchnie są liczone lokalnie dla każdego target_time.
+spatial:
+  enabled: true
+  algorithm: idw
+  boundary_geojson: smog_ai/resources/poland_boundary.geojson
+  places_csv: smog_ai/resources/polish_places.csv
+  projected_crs: EPSG:2180
+  grid_resolution_km: 8.0
+  idw_power: 2.0
+  idw_distance_smoothing_m: 100.0
+  exact_station_threshold_m: 10.0
+  nearest_stations: 8
+  minimum_stations: 3
+  maximum_distance_km: 220.0
+  confidence_distance_km: 85.0
+  confidence_minimum: 0.08
+  publish_station_points: true
+  publish_boundary: true
+  local_cache_dir: spatial
+  max_surface_age_hours: 60
+
+publication:
+  enabled: true
+  transport: object_store
+  api_url: https://example.invalid/api/v1
+  api_token_env: PUBLISH_API_TOKEN
+  timeout_seconds: 45
+  max_attempts: 12
+  backoff_base_seconds: 60
+  backoff_max_seconds: 21600
+  dead_letter_after_attempts: 12
+  snapshot_history_days: 14
+  gzip_compresslevel: 6
+
+nlp:
+  provider: rule_based
+  model: gpt-4.1-mini
+  base_url: https://api.openai.com/v1
+  api_key_env: LLM_API_KEY
+  timeout_seconds: 30
+  max_retries: 2
+  temperature: 0.0
+  allow_rule_based_fallback: true
+  default_country: Polska
+  default_timezone: Europe/Warsaw
+
+# MLflow is optional and local-first. App Platform reads a precomputed
+# comparison artifact; it does not need to run an MLflow server.
+mlflow:
+  enabled: false
+  strict: false
+  tracking_uri: ""
+  experiment_name: smog-ai-hourly
+  registry_enabled: false
+  registered_model_prefix: smog-ai-hourly
+  log_model_artifacts: false
+  maximum_runs_per_target: 100
+  local_artifact_dir: mlflow
+  comparison_path: reports/mlflow/model-comparison.json
+  publish_comparison_to_object_storage: false
+  ui_url: null
+
+observability:
+  backend: none
+  public_key_env: LANGFUSE_PUBLIC_KEY
+  secret_key_env: LANGFUSE_SECRET_KEY
+  base_url_env: LANGFUSE_BASE_URL
+  environment: production
+  release: 1.7.0
+  prompt_template_version: air-query-v1
+  feedback_enabled: true
+  local_feedback_path: feedback/prompt-feedback.jsonl
+  flush_on_request: false
+
+locking:
+  lease_seconds: 3600
+  heartbeat_seconds: 30
+  windows_mutex_prefix: Global\SmogAI
+
+health:
+  minimum_free_disk_gb: 2.0
+  max_last_collection_age_hours: 6
+  max_last_forecast_age_hours: 8
+  publication_probe_enabled: false
+  source_api_probe_enabled: false
+  object_storage_probe_enabled: true
+
+backup:
+  daily_keep: 7
+  weekly_keep: 8
+  monthly_keep: 12

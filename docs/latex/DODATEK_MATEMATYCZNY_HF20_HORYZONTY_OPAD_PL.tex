@@ -1,0 +1,32 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[polish]{babel}
+\usepackage{lmodern}
+\usepackage[a4paper,margin=2.3cm]{geometry}
+\usepackage{amsmath,amssymb,booktabs}
+\title{HF20: matematyka horyzontów i bramy jakości opadu}
+\author{Edward Szczypka}
+\date{\today}
+\begin{document}
+\maketitle
+\section{Horyzont użytkownika i modelu}
+\[
+ d=\left\lceil\frac{a-t_o}{1\,\mathrm{h}}\right\rceil,
+ \qquad h_\ell=d+\ell-1,
+ \qquad \ell=1,\ldots,48.
+\]
+Dla $d\leq 13$ otrzymujemy $h_{48}\leq 60$.
+\section{Model hurdle opadu}
+Niech $Z=\mathbf{1}\{Y\geq\tau\}$. Model szacuje
+$p(x)=\Pr(Z=1\mid x)$ oraz $m(x)=\mathbb{E}[Y\mid Z=1,x]$, a prognoza
+oczekiwana wynosi $\widehat Y=p(x)m(x)$.
+\section{Brier skill}
+Dla $BS=\frac1n\sum_i(p_i-z_i)^2$ i baseline $BS_0$:
+\[
+ BSS=1-\frac{BS}{BS_0}.
+\]
+Wymagamy dodatniego BSS względem klimatologii i persistence, poprawy MAE
+względem persistence, ograniczonego biasu oraz ROC AUC nie mniejszego niż
+ustalony próg.
+\end{document}

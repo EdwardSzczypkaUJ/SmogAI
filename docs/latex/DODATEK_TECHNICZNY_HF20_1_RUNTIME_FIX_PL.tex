@@ -1,0 +1,25 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[polish]{babel}
+\usepackage{lmodern}
+\usepackage[a4paper,margin=2.4cm]{geometry}
+\usepackage{hyperref}
+\title{HF20.1: naprawa audytu kontraktu i lokalnego MLflow}
+\author{Edward Szczypka}
+\date{\today}
+\begin{document}
+\maketitle
+\section{Audyt kontraktu}
+Komenda CLI musi jawnie importować funkcję
+\texttt{audit\_latest\_hourly\_serving\_contract}. Test regresyjny sprawdza
+tożsamość obiektu eksportowanego przez CLI i funkcji z modułu audytu.
+\section{PowerShell 5.1 i Python}
+Wieloliniowy kod Pythona nie jest przekazywany przez \texttt{python -c}.
+Zamiast tego uruchamiany jest zwykły plik
+\texttt{scripts/enable\_local\_mlflow.py}. Eliminuje to zależność od reguł
+cytowania natywnych argumentów Windows PowerShell 5.1.
+\section{Local-only}
+Walidacja konfiguracji wymusza wyłączenie ObjectStore, uploadu modeli,
+publikacji i mirrora manifestu snapshotu w konfiguracji treningowej.
+\end{document}

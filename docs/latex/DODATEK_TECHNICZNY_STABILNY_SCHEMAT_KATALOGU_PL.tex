@@ -1,0 +1,61 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[polish]{babel}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage[a4paper,margin=2.3cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{listings}
+\lstset{basicstyle=\ttfamily\small,breaklines=true,frame=single}
+\title{Stabilny schemat katalogu parametrów Smog AI}
+\author{Edward Szczypka}
+\date{\today}
+\begin{document}
+\maketitle
+\section{Problem kontraktu częściowego}
+Niech $P$ oznacza zbiór zarejestrowanych parametrów, a $D\subseteq P$ zbiór
+parametrów posiadających już pomiary. Wcześniejsza implementacja zwracała
+pełną statystykę tylko dla $p\in D$, natomiast dla $p\in P\setminus D$
+zwracała pusty słownik. Klient działający w trybie ścisłym nie mógł zatem
+bezpiecznie obliczyć liczby wierszy.
+
+\section{Kontrakt całkowity}
+Po poprawce dla każdego $p\in P$ funkcja katalogu jest całkowita:
+\[
+ S(p)=(r_p,t_p^{\min},t_p^{\max},s_p,h_p),
+\]
+gdzie przy braku danych:
+\[
+ r_p=s_p=h_p=0,\qquad
+ t_p^{\min}=t_p^{\max}=\mathrm{null}.
+\]
+
+\begin{lstlisting}
+"measurements": {
+  "rows": 0,
+  "start": null,
+  "end": null,
+  "stations": 0,
+  "unique_hours": 0
+}
+\end{lstlisting}
+
+\section{Warstwa prezentacji}
+Renderer PowerShell używa dodatkowo funkcji defensywnej
+\texttt{Get-OptionalProperty}. Dzięki temu brak przyszłego pola opcjonalnego
+nie przerywa renderowania pozostałych tabel. Temperatura znajduje się w
+katalogu IMGW, a nie w katalogu zanieczyszczeń GIOŚ.
+
+\section{Niezmienniki}
+\begin{enumerate}
+\item Każdy parametr ma wszystkie klucze statystyk.
+\item Wartości liczbowe przy braku danych są zerami.
+\item Obiekty statystyk nie są współdzielone mutowalnie.
+\item Katalog surowy JSON i tabela PowerShell opisują ten sam kontrakt.
+\item Poprawka nie modyfikuje danych ani modeli.
+\end{enumerate}
+\end{document}

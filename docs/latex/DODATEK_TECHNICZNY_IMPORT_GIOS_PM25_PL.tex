@@ -1,0 +1,96 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[polish]{babel}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage[a4paper,margin=2.3cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,longtable}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{listings}
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue}
+\title{Import historycznych danych PM2.5 GIOŚ\\
+Diagnoza, niezmienniki i przepływ Bridge}
+\author{Edward Szczypka\\\href{mailto:edward@szczypka.guru}{edward@szczypka.guru}}
+\date{2026}
+\begin{document}
+\maketitle
+
+\section{Wynik audytu}
+
+Oficjalne roczne archiwa zostały pobrane poprawnie i przechodzą kontrolę CRC.
+Parser odczytał następujące liczby poprawnych, nieujemnych wartości:
+
+\begin{center}
+\begin{tabular}{rrrr}
+\toprule
+Rok & Liczba serii & Poprawne wartości & Wiersze w SQLite\\
+\midrule
+2022 & 89 & 755956 & 0\\
+2023 & 92 & 779380 & 0\\
+2024 & 96 & 817648 & 0\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Oznacza to, że problem nie dotyczy dostępności danych GIOŚ. Awaria leżała
+pomiędzy wyborem arkusza a warstwą persystencji.
+
+\section{Zidentyfikowane błędy}
+
+\subsection{Normalizacja nazwy zanieczyszczenia}
+
+Kod aplikacji używa oznaczenia
+\[
+  \mathrm{PM}_{2.5},
+\]
+natomiast oficjalne pliki roczne mają nazwy typu
+\texttt{2022\_PM25\_1g.xlsx}. Selektor musi utożsamiać warianty
+\texttt{PM25}, \texttt{PM2.5} oraz \texttt{PM2,5}.
+
+\subsection{Wiersz kodu stacji}
+
+W arkuszu występuje wiersz porządkowy \texttt{Nr} zawierający wartości
+$1,2,\ldots,n$ oraz osobny wiersz \texttt{Kod stacji}. Heurystyka oparta tylko
+na liczbie unikalnych wartości wybierała wiersz porządkowy. Poprawiony algorytm
+najpierw wyszukuje jawną etykietę \texttt{Kod stacji} i odrzuca sekwencje
+kolejnych liczb naturalnych.
+
+\section{Niezmiennik persystencji}
+
+Niech $V$ oznacza liczbę poprawnych wartości w arkuszu, $I$ liczbę nowych
+insertów, a $D$ liczbę rekordów pominiętych jako istniejące duplikaty.
+Importer akceptuje arkusz wyłącznie wtedy, gdy
+\[
+  V = I + D.
+\]
+Jeżeli $V>0$ oraz $I+D=0$, wykonanie kończy się błędem i nie zapisuje markera
+ukończenia w \texttt{state.json}.
+
+\section{Przepływ Bridge}
+
+\begin{verbatim}
+GIOŚ ZIP
+  -> HistoricalDataCacheBridge
+       local | object_store | hybrid
+  -> normalizacja PM25/PM2.5
+  -> parser XLSX i Kod stacji
+  -> SQLite batch insert
+  -> walidacja V = I + D
+  -> state.json
+\end{verbatim}
+
+Backend ObjectStore może być implementacją DigitalOcean Spaces, AWS S3,
+MinIO albo lokalnego systemu plików. Wybór backendu nie zmienia kontraktu
+naukowego parsera i persystencji.
+
+\section{Progress i diagnostyka}
+
+Dla każdej serii emitowane są: rok, parametr, kod stacji, liczba wykonanych
+serii, liczba wszystkich serii, procent, nowe rekordy oraz duplikaty. Log jest
+kierowany na standardowe wyjście i do pliku JSONL. Monitor PowerShell pokazuje
+procent, ETA, PID, CPU i RAM.
+
+\end{document}

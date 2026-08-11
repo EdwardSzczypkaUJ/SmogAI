@@ -1,0 +1,676 @@
+\documentclass[11pt,a4paper,oneside]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[polish]{babel}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage[a4paper,margin=2.25cm]{geometry}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{booktabs,longtable,tabularx,array}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage[nameinlink,noabbrev]{cleveref}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,shapes.geometric}
+\usepackage{listings}
+\usepackage{fancyhdr}
+\usepackage{lastpage}
+
+\definecolor{codegray}{RGB}{245,245,245}
+\definecolor{darkblue}{RGB}{20,55,100}
+\definecolor{darkgreen}{RGB}{25,105,75}
+\definecolor{darkred}{RGB}{145,40,40}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=darkblue,
+  urlcolor=darkblue,
+  citecolor=darkgreen,
+  pdftitle={Dokumentacja techniczna przetwarzania Smog AI 1.7.0},
+  pdfauthor={Edward Szczypka}
+}
+
+\lstdefinestyle{code}{
+  backgroundcolor=\color{codegray},
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  columns=fullflexible,
+  showstringspaces=false,
+  keywordstyle=\color{darkblue},
+  commentstyle=\color{darkgreen},
+  stringstyle=\color{darkred}
+}
+
+\setlength{\headheight}{14pt}
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{Smog AI 1.7.0 --- przetwarzanie}
+\rhead{Edward Szczypka}
+\cfoot{\thepage/\pageref{LastPage}}
+
+\title{\textbf{Smog AI 1.7.0}\\[0.2em]
+\textbf{Dokumentacja techniczna przetwarzania danych, treningu, predykcji i publikacji}}
+\author{Edward Szczypka\\\href{mailto:edward@szczypka.guru}{edward@szczypka.guru}}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Dokument opisuje kompletny przepływ systemu Smog AI: od pobrania danych GIOŚ
+oraz IMGW, przez lokalną bazę SQLite, walidację Pandera, przygotowanie
+wersjonowanych zbiorów uczących, otwartą platformę modeli, prognozy godzinowe
+na 1--48 godzin, przestrzenną interpolację Polski i publikację do DigitalOcean
+Spaces, aż do publicznego FastAPI i dashboardu Streamlit. Dokument jest
+techniczny: wskazuje kontrakty danych, kolejność etapów, niezmienniki,
+idempotencję, punkty rozszerzeń, obsługę błędów i procedury operacyjne.
+Specyfikacja matematyczna modeli znajduje się w odrębnym dokumencie
+\texttt{DOKUMENTACJA\_MODELU\_GODZINOWEGO\_PL.tex}.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{Granice systemu}
+
+System składa się z dwóch niezależnych komponentów.
+
+\subsection{Komputer lokalny}
+
+Komputer lokalny odpowiada za wszystkie operacje obliczeniowe:
+\begin{itemize}[nosep]
+  \item pobieranie danych GIOŚ i IMGW;
+  \item historię pomiarów w SQLite;
+  \item walidację, kontrolę jakości i dopasowanie stacji;
+  \item publikację pakietu wejściowego do Spaces;
+  \item ponowne pobranie pakietu ze Spaces do treningu;
+  \item przygotowanie cech, trening i wybór modeli;
+  \item prognozy punktowe dla dokładnych godzin;
+  \item interpolację przestrzenną całej Polski;
+  \item publikację modeli, metryk, prognoz, map i dokumentacji.
+\end{itemize}
+
+\subsection{DigitalOcean}
+
+DigitalOcean Spaces jest prywatnym magazynem obiektowym zgodnym z S3.
+DigitalOcean App Platform uruchamia FastAPI i Streamlit. Warstwa zdalna:
+\begin{itemize}[nosep]
+  \item nie pobiera danych źródłowych;
+  \item nie trenuje modeli;
+  \item nie uruchamia \texttt{model.predict()};
+  \item nie interpoluje przestrzennie;
+  \item odczytuje wyłącznie gotowe, lokalnie policzone artefakty.
+\end{itemize}
+
+\section{Diagram przepływu}
+
+\begin{figure}[ht]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+  node distance=9mm and 12mm,
+  block/.style={draw, rounded corners, align=center, minimum width=33mm,
+                minimum height=10mm, fill=blue!6},
+  data/.style={draw, rounded corners, align=center, minimum width=33mm,
+               minimum height=10mm, fill=green!8},
+  cloud/.style={draw, rounded corners, align=center, minimum width=33mm,
+                minimum height=10mm, fill=orange!10},
+  arrow/.style={-{Latex[length=2.1mm]}, thick}
+]
+\node[data] (gios) {GIOŚ JSON-LD};
+\node[data, below=of gios] (imgw) {IMGW bieżące + archiwum};
+\node[block, right=of gios, yshift=-9mm] (normalize) {Normalizacja\\UTC i kontrakty};
+\node[block, right=of normalize] (sqlite) {SQLite WAL\\historia lokalna};
+\node[block, right=of sqlite] (quality) {Pandera + jakość\\+ Haversine};
+\node[cloud, right=of quality] (bronze) {Spaces\\pakiet Bronze};
+\node[block, below=18mm of bronze] (features) {Lokalny odczyt\\i cechy godzinowe};
+\node[block, left=of features] (models) {Otwarty rejestr\\modeli};
+\node[block, left=of models] (predict) {Prognozy stacyjne\\h=1..48};
+\node[block, left=of predict] (spatial) {Interpolacja\\przestrzenna};
+\node[cloud, below=18mm of spatial] (serving) {Spaces\\Serving + modele};
+\node[block, right=of serving] (api) {FastAPI\\tylko odczyt};
+\node[block, right=of api] (ui) {Streamlit\\mapa i dokumentacja};
+
+\draw[arrow] (gios) -- (normalize);
+\draw[arrow] (imgw) -- (normalize);
+\draw[arrow] (normalize) -- (sqlite);
+\draw[arrow] (sqlite) -- (quality);
+\draw[arrow] (quality) -- (bronze);
+\draw[arrow] (bronze) -- (features);
+\draw[arrow] (features) -- (models);
+\draw[arrow] (models) -- (predict);
+\draw[arrow] (predict) -- (spatial);
+\draw[arrow] (spatial) -- (serving);
+\draw[arrow] (serving) -- (api);
+\draw[arrow] (api) -- (ui);
+\end{tikzpicture}}
+\caption{Przepływ end-to-end. Strzałka Spaces $\rightarrow$ lokalny trening jest
+celowa i realizuje wymaganie komunikacji z Cloud Storage.}
+\end{figure}
+
+\section{Konfiguracja i przenośność}
+
+Projekt nie ma zaszytego katalogu instalacji. Katalog repozytorium jest
+ustalany na podstawie położenia skryptu albo przez
+\texttt{SMOG\_AI\_PROJECT\_ROOT}. Dane uruchomieniowe są przechowywane poza
+repozytorium, domyślnie w \texttt{\%ProgramData\%\textbackslash SmogAI}.
+
+Główne pliki:
+\begin{lstlisting}[style=code]
+C:\ProgramData\SmogAI\config.yaml
+C:\ProgramData\SmogAI\smog-ai.env
+C:\ProgramData\SmogAI\server-local.env
+C:\ProgramData\SmogAI\data\smog.db
+C:\ProgramData\SmogAI\logs\...
+C:\ProgramData\SmogAI\models\...
+\end{lstlisting}
+
+Sekrety nie są przekazywane w argumentach procesu. Plik środowiskowy jest
+ładowany jawnie przez skrypty PowerShell i nie trafia do Git.
+
+\section{Pobieranie GIOŚ}
+
+Klient GIOŚ:
+\begin{enumerate}
+  \item pobiera listę stacji stronicowanym endpointem JSON-LD;
+  \item pobiera sensory każdej stacji;
+  \item wybiera PM10 i PM2.5;
+  \item pobiera bieżącą serię stanowiska;
+  \item normalizuje daty do UTC;
+  \item zapisuje odpowiedź diagnostyczną w \texttt{raw\_json};
+  \item wstawia rekordy idempotentnie przez ograniczenie UNIQUE.
+\end{enumerate}
+
+Błąd pojedynczego sensora nie unieważnia całej kolekcji. Niedostępne endpointy
+stanowisk historycznych są klasyfikowane jako pominięte lub ostrzeżenia, a
+rzeczywiste błędy sieciowe trafiają do \texttt{collection\_errors}.
+
+\section{Pobieranie IMGW}
+
+\subsection{Dane bieżące}
+
+Endpoint SYNOP dostarcza najnowsze obserwacje stacji. Wartość opadu jest
+zapisywana z jawnym polem
+\texttt{precipitation\_accumulation\_period\_hours}. Domyślna konfiguracja
+traktuje ją jako akumulację sześciogodzinną kończącą się w czasie pomiaru.
+System nie dzieli takiej wartości przez sześć i nie tworzy sztucznego rozkładu
+godzinowego.
+
+\subsection{Oficjalne archiwum terminowe/SYNOP}
+
+Adapter archiwalny:
+\begin{enumerate}
+  \item wyznacza miesiące objęte skonfigurowanym lookbackiem;
+  \item odczytuje listing rocznego katalogu IMGW;
+  \item pobiera miesięczne ZIP-y do lokalnego cache;
+  \item liczy SHA-256 i sprawdza integralność ZIP;
+  \item czyta CSV według dołączonego oficjalnego nagłówka;
+  \item normalizuje stację i czas;
+  \item zapisuje temperaturę, wilgotność, ciśnienie, wiatr i opad;
+  \item zachowuje kody jakości oraz pochodzenie w \texttt{raw\_json};
+  \item zapisuje checksum przetworzonego pliku w
+        \texttt{application\_state}.
+\end{enumerate}
+
+Ponowne uruchomienie pomija plik, którego checksum i status sukcesu nie
+uległy zmianie. Kody pól archiwum są konfigurowalne, dzięki czemu adapter można
+zastąpić lub dostosować bez zmiany domeny.
+
+\section{Lokalna baza SQLite}
+
+Baza pracuje w trybie WAL z ustawionym \texttt{busy\_timeout}. Migracje są
+prowadzone przez Alembic. Najważniejsze niezmienniki:
+\begin{itemize}[nosep]
+  \item pomiar jest unikalny według źródła, sensora/stacji, parametru i czasu;
+  \item prognoza jest unikalna według modelu, stacji, parametru, czasu
+        utworzenia, czasu docelowego i horyzontu;
+  \item prognoza jest zapisywana przed czasem docelowym;
+  \item nie usuwa się podejrzanych pomiarów --- otrzymują flagi jakości.
+\end{itemize}
+
+\section{Walidacja Pandera}
+
+Każdy etap ma osobny kontrakt:
+\begin{itemize}[nosep]
+  \item pomiary GIOŚ;
+  \item pomiary IMGW;
+  \item pakiet operacyjny;
+  \item godzinowe ramki treningowe;
+  \item prognozy;
+  \item snapshot i powierzchnie przestrzenne.
+\end{itemize}
+
+Raport zawiera czas rozpoczęcia i zakończenia, liczbę wierszy, kolumny,
+przypadki błędów i checksum. Polityki \texttt{report} oraz \texttt{fail} są
+konfigurowalne. Błąd kontraktu treningowego zatrzymuje aktywację modelu.
+
+\section{Warstwy Bronze, Curated i Serving}
+
+\subsection{Bronze}
+
+Pakiet \texttt{operational-data.json.gz} zawiera stacje, sensory, pomiary i
+dopasowania. Manifest ma \texttt{run\_id}, zakres danych, liczności, checksum,
+status kompletności i listę brakujących elementów.
+
+\subsection{Curated}
+
+Dla każdego celu tworzony jest wersjonowany zbiór godzinowy. Rekord zawiera:
+\begin{lstlisting}[style=code]
+measurement_time   # origin_time
+target_time
+horizon_hours
+station/source identifiers
+lags and rolling features
+target-time cyclic features
+target
+\end{lstlisting}
+
+Warunek czasu jest walidowany:
+\[
+  \texttt{target\_time}-\texttt{measurement\_time}
+  =\texttt{horizon\_hours}.
+\]
+
+\subsection{Serving}
+
+Serving zawiera gotowe prognozy stacyjne, powierzchnie mapowe, model cards,
+metryki i dokumentację. App Platform korzysta tylko z tej warstwy.
+
+\subsection{Bezpieczeństwo ramek na danych rzeczywistych}
+
+Normalizacja godzinowa zachowuje luki potrzebne do budowy lagów, lecz wiersz
+z brakującą wartością bieżącą nie staje się automatycznie obserwacją uczącą.
+Dla PM10, PM2.5 i temperatury punkt bazowy musi mieć rzeczywistą wartość
+bieżącą. Dla opadu sześciogodzinnego brak bieżącej akumulacji jest dopuszczalny,
+ponieważ WO6G jest raportowane tylko w wybranych terminach, a model hurdle
+imputuje brakujące cechy bez wymyślania godzinowych wartości opadu.
+
+Modele temperatury i opadu są trenowane na jednej serii dla każdej unikalnej
+stacji IMGW. Dopasowanie wielu stacji GIOŚ do tej samej stacji IMGW nie powiela
+obserwacji pogodowych. W modelach PM dopasowanie pozostaje częścią budowy cech
+dla konkretnej stacji jakości powietrza.
+
+Reprezentacja \texttt{origin $\times$ horyzont} ma konfigurowalny limit
+\texttt{maximum\_training\_rows\_per\_target}. Punkty bazowe są wybierane
+deterministycznie i proporcjonalnie według stacji przed ekspansją. Wartość
+docelowa jest nadal dołączana z pełnej serii po dokładnym
+\texttt{target\_time}; limit ogranicza zużycie pamięci, ale nie zmienia
+semantyki horyzontu.
+
+\section{Przygotowanie cech}
+
+Cechy są obliczane wyłącznie z danych dostępnych w chwili bazowej. Obejmują:
+\begin{itemize}[nosep]
+  \item lagi 1, 3, 6, 12 i 24 godziny;
+  \item średnie i odchylenia kroczące;
+  \item tempo zmian;
+  \item składowe kierunku wiatru;
+  \item współrzędne i identyfikatory stacji;
+  \item dokładny horyzont 1--48 godzin;
+  \item sinus/cosinus godziny, dnia tygodnia i roku czasu docelowego.
+\end{itemize}
+
+Opad pozostaje wielkością dla jawnego okresu akumulacji. Jeżeli źródło ma
+okres 6 h, cecha i cel oznaczają akumulację 6 h kończącą się w
+\texttt{target\_time}; jednostka prezentacyjna brzmi \texttt{mm / 6 h}.
+
+\section{Otwarta platforma modeli}
+
+Domena używa Bridge \texttt{ModelProvider}. Provider implementuje:
+\begin{lstlisting}[style=code,language=Python]
+class ModelProvider(Protocol):
+    name: str
+    task: ModelTask
+
+    def fit(self, X, y, *, context): ...
+    def predict(self, artifact, X, *, context) -> PredictionBundle: ...
+    def describe(self, artifact) -> dict: ...
+\end{lstlisting}
+
+Provider nie otrzymuje sesji SQLAlchemy, klienta Spaces, FastAPI ani
+Streamlit. Może pochodzić z:
+\begin{itemize}[nosep]
+  \item rejestru metod wbudowanych;
+  \item modułu z \texttt{register\_models(registry)};
+  \item entry pointu \texttt{smog\_ai.model\_providers};
+  \item import stringu \texttt{module:object}.
+\end{itemize}
+
+W ten sposób można dołączyć Huber, GAM, splajny, XGBoost, LightGBM, CatBoost,
+PyTorch, model grafowy lub własny model bez przebudowy pipeline'u.
+
+\section{Kolejność treningu}
+
+Trening przebiega kaskadowo:
+\begin{enumerate}
+  \item model temperatury;
+  \item model opadu typu hurdle;
+  \item chronologiczne prognozy out-of-fold temperatury i opadu;
+  \item dołączenie prognoz pogody jako cech PM;
+  \item trening PM10 i PM2.5;
+  \item porównanie kandydatów z modelami bazowymi;
+  \item zapis niezmiennego artefaktu i model card;
+  \item atomowa aktualizacja aktywnego wskaźnika.
+\end{enumerate}
+
+Cross-fitting chronologiczny zapobiega przekazaniu modelowi PM rzeczywistej
+pogody z przyszłości. Przy niedostatecznej historii aktywowany jest jawny
+fallback \texttt{insufficient\_history}.
+
+\section{Prognoza godzinowa}
+
+Dla wspólnego \texttt{origin\_time} system tworzy wiersze dla
+$h=1,\ldots,48$. Dla każdego wiersza:
+\[
+  \texttt{target\_time}=\texttt{origin\_time}+h.
+\]
+
+Nie istnieje logika wybierania najbliższego spośród 6/12/24 godzin. Dla pełnej
+godziny wynik pochodzi z bezpośredniego modelu warunkowanego horyzontem. Dla
+czasu pomiędzy pełnymi godzinami można zastosować interpolację liniową lub
+PCHIP wyłącznie pomiędzy sąsiednimi prognozami. Ekstrapolacja jest domyślnie
+zabroniona.
+
+\section{Interpolacja przestrzenna}
+
+Dla każdej zmiennej i każdego \texttt{target\_time} powstaje osobna
+powierzchnia. Interpolator jest kolejnym wymiennym Bridge:
+\begin{itemize}[nosep]
+  \item IDW --- metoda domyślna;
+  \item RBF --- alternatywa;
+  \item kolejne implementacje mogą dodać kriging lub model grafowy.
+\end{itemize}
+
+Na mapie odróżniane są:
+\begin{itemize}[nosep]
+  \item dokładne współrzędne miasta;
+  \item środek wybranej komórki siatki;
+  \item stacje użyte do interpolacji;
+  \item odległość do najbliższej stacji;
+  \item miara pewności przestrzennej.
+\end{itemize}
+
+\section{Publikacja do Spaces}
+
+Obiekty są zapisywane najpierw pod niezmiennym kluczem wersji. Dopiero po
+udanym uploadzie i sprawdzeniu checksum aktualizowany jest mały wskaźnik
+\texttt{latest.json}. Dzięki temu App Platform nigdy nie zobaczy częściowo
+zapisanego pakietu.
+
+Przykładowe prefiksy:
+\begin{lstlisting}[style=code]
+datasets/bronze/
+datasets/curated-hourly/
+models-hourly/
+metrics/hourly-models/
+forecasts/
+maps/
+documentation/
+\end{lstlisting}
+
+\section{FastAPI}
+
+FastAPI uruchamiane na App Platform:
+\begin{itemize}[nosep]
+  \item interpretuje pytanie tekstowe do struktury;
+  \item rozwiązuje nazwę miejsca;
+  \item wybiera pakiet o dokładnym \texttt{target\_time};
+  \item odczytuje wartość z gotowej powierzchni;
+  \item zwraca dokładny punkt, model, jednostkę i niepewność;
+  \item udostępnia dokumentację techniczną i matematyczną.
+\end{itemize}
+
+Brak pakietu dla czasu docelowego daje jawną odpowiedź o braku prognozy.
+Serwer nie wybiera potajemnie najbliższej godziny.
+
+\section{Dashboard}
+
+Dashboard prezentuje:
+\begin{itemize}[nosep]
+  \item mapę 2D jako tryb domyślny;
+  \item opcjonalne, ograniczone logarytmicznie 3D;
+  \item nazwy miast jako warstwę nad kolumnami;
+  \item PM10, PM2.5, temperaturę, prawdopodobieństwo i sumę opadu;
+  \item dokładny punkt zapytania i środek komórki;
+  \item profil godzinowy;
+  \item modele, metryki i providerów;
+  \item dokumentację Markdown i źródła LaTeX.
+\end{itemize}
+
+\section{Idempotencja i odporność}
+
+Każdy etap może zostać powtórzony. Idempotencję zapewniają:
+\begin{itemize}[nosep]
+  \item ograniczenia UNIQUE w SQLite;
+  \item checksum archiwów i artefaktów;
+  \item niezmienne klucze wersji;
+  \item deterministyczne identyfikatory publikacji;
+  \item outbox z ponowieniami i exponential backoff;
+  \item aplikacyjna dzierżawa oraz mutex Windows;
+  \item atomowe wskaźniki aktywnych modeli i powierzchni.
+\end{itemize}
+
+\section{Harmonogram Windows}
+
+\begin{longtable}{@{}p{35mm}p{90mm}@{}}
+\toprule
+Zadanie & Zakres \\
+\midrule
+Godzinowe & GIOŚ, bieżące IMGW, walidacja, dopasowanie, weryfikacja, prognozy,
+powierzchnie, snapshot i publikacja. \\
+Dzienne & Uzupełnianie historii, oficjalne archiwum IMGW, raport jakości,
+outbox, czyszczenie i backup dzienny. \\
+Tygodniowe & Cloud round-trip, ramki uczące, trening, walidacja, aktywacja,
+prognozy i publikacja model cards. \\
+Miesięczne & Integralność SQLite, backup miesięczny, retencja i raport miejsca. \\
+\bottomrule
+\end{longtable}
+
+Każde zadanie używa pełnych ścieżek, interpretera z \texttt{.venv}, blokady,
+limitu czasu, logu oraz propaguje kod zakończenia.
+
+\section{Backup i odzyskiwanie}
+
+SQLite jest kopiowana przez Online Backup API, a nie przez bezpośrednie
+kopiowanie aktywnego pliku WAL. Backup zawiera SHA-256, rozmiar i wynik
+\texttt{PRAGMA quick\_check}. Procedura odzyskiwania:
+\begin{enumerate}
+  \item zatrzymać zadania i procesy API;
+  \item zabezpieczyć pliki bazy, WAL i SHM;
+  \item sprawdzić backup;
+  \item odtworzyć bazę albo uruchomić migracje do pustej bazy;
+  \item ponownie uruchomić kolekcję idempotentną;
+  \item sprawdzić Spaces i healthcheck.
+\end{enumerate}
+
+\section{Monitoring i diagnostyka}
+
+Healthcheck kontroluje bazę, integralność, ostatnią kolekcję, prognozę,
+publikację, outbox, modele, wolne miejsce, Spaces i stan zadań. Logi JSON
+zawierają czas, poziom, logger, etap i wyjątek. Raporty Pandera i model cards
+są publikowane jako niezależne artefakty audytowe.
+
+\section{Kontrakty odbioru}
+
+Wersja jest technicznie ukończona, gdy:
+\begin{enumerate}
+  \item migracje przechodzą na pustej i istniejącej bazie;
+  \item importer GIOŚ i oba adaptery IMGW są idempotentne;
+  \item pakiet Bronze jest kompletny i zwalidowany;
+  \item trening rzeczywiście odczytuje dane ze Spaces;
+  \item rejestr wykrywa metody wbudowane i pluginy;
+  \item prognozy istnieją dla godzin 1--48;
+  \item każda prognoza ma dokładny czas bazowy i docelowy;
+  \item opad ma jawny okres akumulacji;
+  \item powierzchnie istnieją dla wszystkich skonfigurowanych celów;
+  \item FastAPI nie wykonuje modelu ani interpolacji;
+  \item dashboard pokazuje dokładny punkt, modele i dokumentację;
+  \item testy, release gate, wheel i ponowne rozpakowanie ZIP przechodzą.
+\end{enumerate}
+
+\section{Polecenia operacyjne}
+
+\begin{lstlisting}[style=code]
+python -m smog_ai backfill-imgw-archive
+python -m smog_ai upload-operational-data
+python -m smog_ai build-hourly-features --source object_store
+python -m smog_ai list-model-methods
+python -m smog_ai train-hourly
+python -m smog_ai predict-hourly
+python -m smog_ai publish-documentation
+python -m smog_ai storage-health
+python -m smog_ai hourly-readiness
+python -m smog_ai healthcheck --json
+\end{lstlisting}
+
+\section{Dokumenty powiązane}
+
+\begin{itemize}[nosep]
+  \item \texttt{DOKUMENTACJA\_MODELU\_GODZINOWEGO\_PL.tex} --- model
+        matematyczny;
+  \item \texttt{TECHNICAL\_PROCESSING\_PL.md} --- wersja platformowa;
+  \item \texttt{MODEL\_PLUGIN\_GUIDE\_PL.md} --- tworzenie providerów;
+  \item \texttt{CUSTOM\_MODEL\_PROVIDER\_PL.md} --- kompletny przykład pluginu.
+\end{itemize}
+
+
+
+\section{Ograniczony trening, profile i szybkie douczanie}
+
+Pełne archiwum pozostaje w SQLite oraz opcjonalnie w ObjectStore. Ograniczeniu
+podlega wyłącznie ramka używana w pojedynczym treningu. Interfejs
+\texttt{TrainingSetPolicy} rozdziela pipeline od konkretnej metody selekcji.
+Domyślna implementacja wykonuje okno kroczące, zachowuje obserwacje najnowsze i
+rzadkie, a pozostałą część wybiera deterministycznie warstwowo według stacji,
+horyzontu, miesiąca i przedziału zmiennej docelowej.
+
+\subsection{Profile quick i full}
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+Właściwość & quick & full\\
+\midrule
+PM: okno historyczne & 365 dni & 730 dni\\
+Pogoda: okno historyczne & 730 dni & 1095 dni\\
+Maks. wierszy na cel & 250000 & 600000\\
+Maks. wierszy walidacji & 60000 & 120000\\
+Horyzonty na origin & 8 & 12\\
+Foldy cross-fit & 2 & 4\\
+Modele kwantylowe & nie & tak\\
+Budżet ścienny & 30 min & 120 min\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Horyzonty dzielone są na koszyki $[1,6]$, $[7,12]$, $[13,24]$ oraz
+$[25,48]$. Dla każdego originu wybierany jest mały deterministyczny podzbiór,
+a faza wyboru zmienia się wraz z originem. Wszystkie horyzonty pozostają więc
+reprezentowane globalnie bez mnożenia każdej obserwacji przez 48.
+
+\subsection{Wagi}
+
+Waga obserwacji ma postać
+\begin{equation}
+ w_i = 2^{-a_i/\tau}
+       n_{s(i)}^{-1/2}
+       n_{h(i)}^{-1/2},
+\end{equation}
+gdzie $a_i$ oznacza wiek w dniach, $\tau$ okres połowicznego zaniku,
+$n_{s(i)}$ liczebność stacji, a $n_{h(i)}$ liczebność horyzontu. Wagi są
+normalizowane do średniej jeden i ograniczane do przedziału $[0.1,10]$.
+
+\subsection{Korektor reszt i drift}
+
+Kosztowny champion $f_\theta$ pozostaje niezmieniony pomiędzy pełnymi
+treningami. Mały korektor reszt $g_\varphi$ jest aktualizowany metodą
+\texttt{partial\_fit} na dojrzałych, zweryfikowanych prognozach:
+\begin{align}
+ r_i &= y_i-f_\theta(x_i,h_i),\\
+ \widehat y_i &= f_\theta(x_i,h_i)+g_\varphi(z_i).
+\end{align}
+Nowa wersja jest aktywowana tylko wtedy, gdy zmniejsza MAE na późniejszym
+fragmencie chronologicznym. Drift jest sygnalizowany przez relatywny wzrost
+MAE albo przekroczenie progu biasu.
+
+\subsection{Operacje i postęp}
+
+\begin{lstlisting}[style=code]
+python -m smog_ai training-policy-status --profile quick
+python -m smog_ai train-hourly --profile quick
+python -m smog_ai train-hourly --profile full
+python -m smog_ai update-hourly-residuals
+python -m smog_ai hourly-drift-status
+\end{lstlisting}
+
+Tygodniowy harmonogram używa profilu quick, miesięczny profilu full, a
+codzienny wykonuje weryfikację, aktualizację korektora i kontrolę driftu.
+Każdy długi etap zapisuje trwały procent, nazwę zadania i ETA.
+
+
+\section{RangeAwareBackfillBridge}
+
+Przed każdym pobraniem zakres jest ponownie audytowany w SQLite. Niech
+$R_p$ oznacza zbiór oczekiwanych slotów parametru $p$, a $D_p$ sloty obecne.
+Pobierane są wyłącznie składowe źródła przecinające
+\[
+ M_p=R_p\setminus D_p.
+\]
+
+Dla \texttt{WO6G} zbiór $R_p$ ma kadencję sześciogodzinną, dlatego pięć godzin
+pomiędzy kolejnymi sumami nie jest klasyfikowane jako luka. Cache jest
+realizowany przez Bridge \texttt{local}, \texttt{object\_store} albo
+\texttt{hybrid}. SQLite pozostaje źródłem prawdy dla kompletności.
+
+\begin{lstlisting}[style=code]
+python -m smog_ai data-range-audit
+python -m smog_ai plan-missing-ranges --audit-package data-ranges.zip
+python -m smog_ai fill-missing-ranges --audit-package data-ranges.zip
+python -m smog_ai progress --run-type range-backfill --watch
+\end{lstlisting}
+
+Po dwóch próbach bez zmniejszenia liczby brakujących slotów akcja otrzymuje
+status \texttt{skipped\_no\_progress}; luka pozostaje w raporcie, lecz nie
+powoduje nieskończonego ponawiania źródła.
+
+
+\section{Generyczny rejestr parametrów jakości powietrza}
+
+Centralny \texttt{AirParameterRegistry} rozdziela pięć ról parametru:
+\texttt{collect\_current}, \texttt{historical\_backfill},
+\texttt{auxiliary\_feature}, \texttt{forecast\_target} i
+\texttt{spatial\_surface}. Zachodzi w szczególności
+\[
+ C_p=1\not\Rightarrow F_p=1,
+\]
+czyli samo pobieranie parametru nie uruchamia jego modelu.
+
+Definicja zawiera aliasy, jednostkę kanoniczną, kadencję, zakres walidacji,
+kod rocznego API, tokeny nazw plików oraz listę providerów. Wbudowany katalog
+obejmuje PM10, PM2.5, NO2, SO2, O3, CO, C6H6, NO oraz NOX, lecz po aktualizacji
+aktywne domyślnie pozostają tylko dotychczasowe role PM10 i PM2.5.
+
+Dla pomocniczego parametru $q$ tworzy się cechy
+\[
+ (q_t,q_{t-1},q_{t-6},q_{t-24}),
+\]
+łączone po stacji i dokładnym czasie origin. Snapshot oraz manifest map
+publikują kod, nazwę, aliasy i jednostkę, dzięki czemu parser zapytania może
+rozpoznać także parametr dodany konfiguracyjnie.
+
+\begin{lstlisting}[style=code]
+python -m smog_ai air-parameter-catalog
+python -m smog_ai collect-gios --parameters "NO2,O3"
+python -m smog_ai backfill-gios-history --pollutants "NO2,O3"
+python -m smog_ai train-hourly --profile quick --targets "NO2"
+\end{lstlisting}
+
+\end{document}
+
+\section{HF20: kontrakt 48 godzin serwowania}
+Szczegółowy opis rozdzielenia leadu serwującego od horyzontu modelu,
+walidacji opadu, MLflow, Langfuse i jawnej publikacji DigitalOcean znajduje się
+w pliku \texttt{DODATEK\_TECHNICZNY\_HF20\_TIME\_CONTRACT\_MLOPS\_PL.tex}.

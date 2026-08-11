@@ -1,0 +1,56 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[polish]{babel}
+\usepackage{lmodern,microtype}
+\usepackage[a4paper,margin=2.3cm]{geometry}
+\usepackage{booktabs,longtable,xcolor,hyperref,listings}
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue}
+\lstset{basicstyle=\ttfamily\small,breaklines=true,frame=single}
+\title{Etapy 2 i 3 Smog AI\\Model lokalny, aplikacja lokalna i DigitalOcean}
+\author{Edward Szczypka}
+\date{\today}
+\begin{document}
+\maketitle
+
+\section{Etap 2}
+Etap modelowy obejmuje: snapshot, wybór ograniczonego zbioru, trening quick/full,
+monitoring, bramę jakości oraz atomową aktywację. Import historyczny może działać
+równolegle, ponieważ model czyta niezmienny dataset.
+
+\begin{lstlisting}[language=bash]
+.\scripts\Run-Stage2-PM25-Pilot.ps1 `
+  -ProjectRoot $ProjectRoot `
+  -RuntimeRoot $RuntimeRoot `
+  -Parameters "PM2.5" `
+  -Snapshot auto
+\end{lstlisting}
+
+\section{Etap 3A --- lokalne serving}
+FastAPI i Streamlit nie trenują modeli. Czytają ostatnie poprawne artefakty.
+Lokalna bramka obejmuje health, zapytanie tekstowe, profil godzinowy, mapę,
+dokumentację i katalog modeli.
+
+\section{Etap 3B --- DigitalOcean App Platform}
+Docelowy przepływ:
+\[
+ \text{Windows ML}\to\text{DigitalOcean Spaces}\to
+ \text{FastAPI}\to\text{Streamlit}.
+\]
+App Platform nie posiada bazy danych ani joba ML. FastAPI otrzymuje klucz Spaces
+z uprawnieniem odczytu, a dashboard komunikuje się z FastAPI przez prywatny URL.
+
+\section{Automatyczne wdrożenie}
+Workflow GitHub wykonuje testy, waliduje App Spec, wdraża dwa serwisy i wykonuje
+smoke test. Push nie może ominąć bramy testowej.
+
+\section{Preflight}
+\begin{lstlisting}[language=bash]
+.\scripts\Test-Stage2Stage3Readiness.ps1 `
+  -ProjectRoot $ProjectRoot `
+  -RuntimeRoot $RuntimeRoot `
+  -VerifySnapshotChecksum `
+  -StrictArtifacts
+\end{lstlisting}
+
+\end{document}

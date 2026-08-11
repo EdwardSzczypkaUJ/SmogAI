@@ -1,0 +1,40 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[polish]{babel}
+\usepackage{lmodern}
+\usepackage[a4paper,margin=2.4cm]{geometry}
+\usepackage{amsmath}
+\usepackage{hyperref}
+
+\title{HF20.3: rozdzielenie błędów technicznych i jakościowych}
+\author{Edward Szczypka}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Klasyfikacja}
+
+Niech \(H\) oznacza zbiór błędów technicznych kontraktu, a \(Q\) zbiór
+niepowodzeń bram jakościowych. Definiujemy:
+\[
+  \mathrm{serving\_contract\_passed} \iff H=\varnothing,
+\]
+\[
+  \mathrm{publication\_ready} \iff H=\varnothing \land Q=\varnothing.
+\]
+
+Jeżeli \(H=\varnothing\) oraz \(Q\neq\varnothing\), wynik jest częściowy:
+\[
+  \mathrm{partial\_success}=\mathrm{true}.
+\]
+
+\section{Opad}
+
+Niepowodzenie bramy opadu nie unieważnia poprawnej siatki czasu ani modeli
+PM10, PM2.5 i temperatury. Parametry opadowe otrzymują status
+\texttt{experimental}, a pozostałe mogą przejść do lokalnego etapu
+serwowania.
+
+\end{document}

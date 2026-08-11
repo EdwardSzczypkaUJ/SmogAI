@@ -1,0 +1,56 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[polish]{babel}
+\usepackage{lmodern}
+\usepackage[a4paper,margin=2.4cm]{geometry}
+\usepackage{amsmath}
+\usepackage{hyperref}
+
+\title{HF20.2: jawna obsługa dostępności MLflow}
+\author{Edward Szczypka}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Problem}
+
+Samo ustawienie \texttt{mlflow.enabled=true} nie dowodzi, że serwer pod
+\texttt{tracking\_uri} jest uruchomiony. Dotychczas błąd połączenia był
+ujawniany dopiero podczas inicjalizacji eksperymentu i powodował długi
+traceback.
+
+\section{Preflight}
+
+Przed treningiem definiujemy stan:
+\[
+S\in\{
+\text{ready},
+\text{disabled},
+\text{not-installed},
+\text{not-running},
+\text{invalid}
+\}.
+\]
+
+Trening z wymaganym MLflow może rozpocząć się tylko dla
+\(S=\text{ready}\). Dla treningu bez MLflow stosowane jest jednorazowe
+nadpisanie środowiska:
+\[
+\texttt{SMOG\_AI\_MLFLOW\_ENABLED=false}.
+\]
+
+\section{Polityki}
+
+\begin{description}
+\item[required] MLflow musi być dostępny; w przeciwnym razie trening nie
+rozpoczyna się.
+\item[disabled] trening zawsze działa bez MLflow.
+\item[auto] używa MLflow, gdy jest dostępny, w przeciwnym razie kontynuuje
+bez niego z jawnym ostrzeżeniem.
+\item[ask] użytkownik wybiera ponowny test, trening bez MLflow albo
+zakończenie.
+\end{description}
+
+\end{document}

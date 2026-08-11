@@ -1,0 +1,183 @@
+name: CI and deploy to DigitalOcean App Platform
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: digitalocean-production-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  test:
+    name: Tests and deployment contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            requirements-server.txt
+            pyproject.toml
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+          python -m pip install -r requirements-server.txt
+
+      - name: Verify dependency consistency
+        run: python -m pip check
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Run remaining offline release gate
+        run: python scripts/verify_release.py --skip-tests --output release-verification.json
+
+      - name: Upload release verification report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-verification-${{ github.sha }}
+          path: release-verification.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  deploy:
+    name: Deploy production
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.app && fromJson(steps.deploy.outputs.app).live_url }}
+    env:
+      REPOSITORY_SLUG: ${{ github.repository }}
+      DIGITALOCEAN_APP_NAME: ${{ vars.DIGITALOCEAN_APP_NAME || 'gios-imgw-customer' }}
+      SMOG_AI_CUSTOMER_NAME: ${{ vars.SMOG_AI_CUSTOMER_NAME || 'Customer' }}
+
+      SPACES_BUCKET: ${{ vars.SPACES_BUCKET }}
+      SPACES_REGION: ${{ vars.SPACES_REGION || 'fra1' }}
+      SPACES_ENDPOINT_URL: ${{ vars.SPACES_ENDPOINT_URL || format('https://{0}.digitaloceanspaces.com', vars.SPACES_REGION || 'fra1') }}
+      SPACES_PREFIX: ${{ vars.SPACES_PREFIX || 'smog-ai/production' }}
+      SPACES_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+      SPACES_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+
+      SMOG_AI_LLM_PROVIDER: ${{ vars.SMOG_AI_LLM_PROVIDER || 'rule_based' }}
+      SMOG_AI_LLM_MODEL: ${{ vars.SMOG_AI_LLM_MODEL || 'gpt-4.1-mini' }}
+      SMOG_AI_LLM_BASE_URL: ${{ vars.SMOG_AI_LLM_BASE_URL || 'https://api.openai.com/v1' }}
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+
+      SMOG_AI_OBSERVABILITY_BACKEND: ${{ vars.SMOG_AI_OBSERVABILITY_BACKEND || 'none' }}
+      SMOG_AI_PROMPT_TEMPLATE_VERSION: ${{ vars.SMOG_AI_PROMPT_TEMPLATE_VERSION || 'air-query-v1' }}
+      SMOG_AI_MLFLOW_UI_URL: ${{ vars.SMOG_AI_MLFLOW_UI_URL }}
+      LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+      LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+      LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL || 'https://cloud.langfuse.com' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check required deployment settings
+        env:
+          DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          required=(
+            DIGITALOCEAN_ACCESS_TOKEN SPACES_BUCKET SPACES_REGION
+            SPACES_ACCESS_KEY_ID SPACES_SECRET_ACCESS_KEY
+          )
+          for name in "${required[@]}"; do
+            test -n "${!name:-}" || { echo "Missing GitHub variable/secret: $name"; exit 1; }
+          done
+          if [ "$SMOG_AI_LLM_PROVIDER" = "openai_compatible" ]; then
+            test -n "${LLM_API_KEY:-}" || { echo "LLM_API_KEY is required for openai_compatible"; exit 1; }
+          fi
+          if [ "$SMOG_AI_OBSERVABILITY_BACKEND" = "langfuse" ]; then
+            test -n "${LANGFUSE_PUBLIC_KEY:-}" || { echo "LANGFUSE_PUBLIC_KEY is required"; exit 1; }
+            test -n "${LANGFUSE_SECRET_KEY:-}" || { echo "LANGFUSE_SECRET_KEY is required"; exit 1; }
+          fi
+
+      - name: Deploy application specification
+        id: deploy
+        uses: digitalocean/app_action/deploy@v2
+        env:
+          REPOSITORY_SLUG: ${{ env.REPOSITORY_SLUG }}
+          DIGITALOCEAN_APP_NAME: ${{ env.DIGITALOCEAN_APP_NAME }}
+          SMOG_AI_CUSTOMER_NAME: ${{ env.SMOG_AI_CUSTOMER_NAME }}
+          SPACES_BUCKET: ${{ env.SPACES_BUCKET }}
+          SPACES_REGION: ${{ env.SPACES_REGION }}
+          SPACES_ENDPOINT_URL: ${{ env.SPACES_ENDPOINT_URL }}
+          SPACES_PREFIX: ${{ env.SPACES_PREFIX }}
+          SPACES_ACCESS_KEY_ID: ${{ env.SPACES_ACCESS_KEY_ID }}
+          SPACES_SECRET_ACCESS_KEY: ${{ env.SPACES_SECRET_ACCESS_KEY }}
+          SMOG_AI_LLM_PROVIDER: ${{ env.SMOG_AI_LLM_PROVIDER }}
+          SMOG_AI_LLM_MODEL: ${{ env.SMOG_AI_LLM_MODEL }}
+          SMOG_AI_LLM_BASE_URL: ${{ env.SMOG_AI_LLM_BASE_URL }}
+          LLM_API_KEY: ${{ env.LLM_API_KEY }}
+          SMOG_AI_OBSERVABILITY_BACKEND: ${{ env.SMOG_AI_OBSERVABILITY_BACKEND }}
+          SMOG_AI_PROMPT_TEMPLATE_VERSION: ${{ env.SMOG_AI_PROMPT_TEMPLATE_VERSION }}
+          SMOG_AI_MLFLOW_UI_URL: ${{ env.SMOG_AI_MLFLOW_UI_URL }}
+          LANGFUSE_PUBLIC_KEY: ${{ env.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ env.LANGFUSE_SECRET_KEY }}
+          LANGFUSE_BASE_URL: ${{ env.LANGFUSE_BASE_URL }}
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          app_spec_location: .do/app.yaml
+          print_build_logs: true
+          print_deploy_logs: true
+
+      - name: Smoke test FastAPI and Streamlit
+        env:
+          APP_URL: ${{ fromJson(steps.deploy.outputs.app).live_url }}
+        run: |
+          set -euo pipefail
+          echo "Application URL: $APP_URL"
+          for attempt in $(seq 1 36); do
+            if curl --fail --silent --show-error --max-time 20 "$APP_URL/api/v1/health" > health.json; then
+              cat health.json
+              break
+            fi
+            if [ "$attempt" -eq 36 ]; then
+              echo "API health check did not succeed"
+              exit 1
+            fi
+            sleep 10
+          done
+          curl --fail --silent --show-error --max-time 25 "$APP_URL/_stcore/health" > /dev/null
+          curl --fail --silent --show-error --max-time 25 "$APP_URL/" > /dev/null
+
+      - name: Deployment summary
+        env:
+          APP_URL: ${{ fromJson(steps.deploy.outputs.app).live_url }}
+        run: |
+          {
+            echo "## DigitalOcean deployment"
+            echo ""
+            echo "- URL: $APP_URL"
+            echo "- Commit: $GITHUB_SHA"
+            echo "- Storage: DigitalOcean Spaces ($SPACES_BUCKET/$SPACES_PREFIX)"
+            echo "- NLP provider: $SMOG_AI_LLM_PROVIDER"
+            echo "- Observability: $SMOG_AI_OBSERVABILITY_BACKEND"
+            echo "- API health: $APP_URL/api/v1/health"
+            echo "- Frontend: $APP_URL/"
+          } >> "$GITHUB_STEP_SUMMARY"

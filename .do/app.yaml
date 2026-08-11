@@ -1,0 +1,286 @@
+name: ${DIGITALOCEAN_APP_NAME}
+region: fra
+
+features:
+  - buildpack-stack=ubuntu-22
+
+alerts:
+  - rule: DEPLOYMENT_FAILED
+  - rule: DOMAIN_FAILED
+
+disable_edge_cache: true
+
+services:
+  - name: api
+    environment_slug: python
+    source_dir: /
+    github:
+      repo: ${REPOSITORY_SLUG}
+      branch: main
+      deploy_on_push: false
+    build_command: python -m pip install --upgrade pip && python -m pip install -r requirements-server.txt
+    run_command: python -m uvicorn server.api.main:app --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips="*"
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-1gb
+    health_check:
+      http_path: /api/v1/health
+      initial_delay_seconds: 20
+      period_seconds: 15
+      timeout_seconds: 8
+      success_threshold: 1
+      failure_threshold: 6
+    liveness_health_check:
+      http_path: /api/v1/ready
+      initial_delay_seconds: 30
+      period_seconds: 30
+      timeout_seconds: 8
+      success_threshold: 1
+      failure_threshold: 5
+    termination:
+      drain_seconds: 30
+      grace_period_seconds: 60
+    envs:
+      - key: SMOG_AI_ENV
+        value: production
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SMOG_AI_APP_VERSION
+        value: "1.7.0"
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SMOG_AI_COMMIT_SHA
+        value: ${_self.COMMIT_HASH}
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SMOG_AI_CUSTOMER_NAME
+        value: ${SMOG_AI_CUSTOMER_NAME}
+        scope: RUN_TIME
+        type: GENERAL
+      - key: DISPLAY_TIMEZONE
+        value: Europe/Warsaw
+        scope: RUN_TIME
+        type: GENERAL
+
+      # App Platform is read-only with respect to the forecast pipeline. The local
+      # Windows process publishes directly to Spaces; FastAPI reads the latest object.
+      - key: SMOG_AI_SERVER_STORAGE_BACKEND
+        value: spaces
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SMOG_AI_SERVER_UPLOADS_ENABLED
+        value: "false"
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SMOG_AI_SERVER_DOCS_ENABLED
+        value: "false"
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SMOG_AI_SERVER_KEEP_VERSIONS
+        value: "100"
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SMOG_AI_SERVER_RATE_LIMIT_PER_MINUTE
+        value: "90"
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SMOG_AI_SPATIAL_ENABLED
+        value: "true"
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SMOG_AI_SPATIAL_CACHE_TTL_SECONDS
+        value: "60"
+        scope: RUN_TIME
+        type: GENERAL
+
+      # Generic S3-compatible ObjectStore Bridge configured for DigitalOcean Spaces.
+      - key: SMOG_AI_OBJECT_STORE_BACKEND
+        value: spaces
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SMOG_AI_OBJECT_STORE_BUCKET
+        value: ${SPACES_BUCKET}
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SMOG_AI_OBJECT_STORE_REGION
+        value: ${SPACES_REGION}
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SMOG_AI_OBJECT_STORE_ENDPOINT
+        value: ${SPACES_ENDPOINT_URL}
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SMOG_AI_OBJECT_STORE_PREFIX
+        value: ${SPACES_PREFIX}
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SPACES_ACCESS_KEY_ID
+        value: ${SPACES_ACCESS_KEY_ID}
+        scope: RUN_TIME
+        type: SECRET
+      - key: SPACES_SECRET_ACCESS_KEY
+        value: ${SPACES_SECRET_ACCESS_KEY}
+        scope: RUN_TIME
+        type: SECRET
+
+      # The provider is variable-driven: openai_compatible when a key is configured,
+      # otherwise rule_based. Both implement the same IntentInterpreter Bridge.
+      - key: SMOG_AI_LLM_PROVIDER
+        value: ${SMOG_AI_LLM_PROVIDER}
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SMOG_AI_LLM_MODEL
+        value: ${SMOG_AI_LLM_MODEL}
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SMOG_AI_LLM_BASE_URL
+        value: ${SMOG_AI_LLM_BASE_URL}
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SMOG_AI_LLM_ALLOW_RULE_FALLBACK
+        value: "true"
+        scope: RUN_TIME
+        type: GENERAL
+      - key: LLM_API_KEY
+        value: ${LLM_API_KEY}
+        scope: RUN_TIME
+        type: SECRET
+
+      # Langfuse is enabled by a repository variable only when credentials exist.
+      - key: SMOG_AI_OBSERVABILITY_BACKEND
+        value: ${SMOG_AI_OBSERVABILITY_BACKEND}
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SMOG_AI_OBSERVABILITY_ENVIRONMENT
+        value: production
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SMOG_AI_OBSERVABILITY_RELEASE
+        value: "1.7.0"
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SMOG_AI_PROMPT_TEMPLATE_VERSION
+        value: ${SMOG_AI_PROMPT_TEMPLATE_VERSION}
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SMOG_AI_PROMPT_FEEDBACK_ENABLED
+        value: "true"
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SMOG_AI_MLFLOW_UI_URL
+        value: ${SMOG_AI_MLFLOW_UI_URL}
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SMOG_AI_OBSERVABILITY_FLUSH_ON_REQUEST
+        value: "true"
+        scope: RUN_TIME
+        type: GENERAL
+      - key: LANGFUSE_PUBLIC_KEY
+        value: ${LANGFUSE_PUBLIC_KEY}
+        scope: RUN_TIME
+        type: SECRET
+      - key: LANGFUSE_SECRET_KEY
+        value: ${LANGFUSE_SECRET_KEY}
+        scope: RUN_TIME
+        type: SECRET
+      - key: LANGFUSE_BASE_URL
+        value: ${LANGFUSE_BASE_URL}
+        scope: RUN_TIME
+        type: GENERAL
+    alerts:
+      - rule: CPU_UTILIZATION
+        operator: GREATER_THAN
+        value: 85
+        window: FIVE_MINUTES
+      - rule: MEM_UTILIZATION
+        operator: GREATER_THAN
+        value: 85
+        window: FIVE_MINUTES
+      - rule: RESTART_COUNT
+        operator: GREATER_THAN
+        value: 3
+        window: FIVE_MINUTES
+
+  - name: dashboard
+    environment_slug: python
+    source_dir: /
+    github:
+      repo: ${REPOSITORY_SLUG}
+      branch: main
+      deploy_on_push: false
+    build_command: python -m pip install --upgrade pip && python -m pip install -r requirements-server.txt
+    run_command: python -m streamlit run server/dashboard/app.py --server.address 0.0.0.0 --server.port 8080 --server.headless true --browser.gatherUsageStats false
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-1gb
+    health_check:
+      http_path: /_stcore/health
+      initial_delay_seconds: 25
+      period_seconds: 15
+      timeout_seconds: 8
+      success_threshold: 1
+      failure_threshold: 6
+    liveness_health_check:
+      http_path: /_stcore/health
+      initial_delay_seconds: 35
+      period_seconds: 30
+      timeout_seconds: 8
+      success_threshold: 1
+      failure_threshold: 5
+    termination:
+      drain_seconds: 30
+      grace_period_seconds: 60
+    envs:
+      - key: SMOG_AI_ENV
+        value: production
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SMOG_AI_APP_VERSION
+        value: "1.7.0"
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SMOG_AI_COMMIT_SHA
+        value: ${_self.COMMIT_HASH}
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SMOG_AI_CUSTOMER_NAME
+        value: ${SMOG_AI_CUSTOMER_NAME}
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SMOG_AI_DASHBOARD_TITLE
+        value: Inteligentna prognoza jakości powietrza — GIOŚ + IMGW
+        scope: RUN_TIME
+        type: GENERAL
+      # Streamlit has no Spaces credentials. It reaches the FastAPI adapter through
+      # App Platform's private network; FastAPI is the only cloud storage reader.
+      - key: SMOG_AI_DASHBOARD_API_URL
+        value: ${api.PRIVATE_URL}/api/v1
+        scope: RUN_TIME
+        type: GENERAL
+    alerts:
+      - rule: CPU_UTILIZATION
+        operator: GREATER_THAN
+        value: 85
+        window: FIVE_MINUTES
+      - rule: MEM_UTILIZATION
+        operator: GREATER_THAN
+        value: 85
+        window: FIVE_MINUTES
+      - rule: RESTART_COUNT
+        operator: GREATER_THAN
+        value: 3
+        window: FIVE_MINUTES
+
+ingress:
+  rules:
+    - match:
+        path:
+          prefix: /api
+      component:
+        name: api
+        preserve_path_prefix: true
+    - match:
+        path:
+          prefix: /
+      component:
+        name: dashboard

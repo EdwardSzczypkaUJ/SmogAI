@@ -1,0 +1,770 @@
+\documentclass[11pt,a4paper,oneside]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[polish]{babel}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage[a4paper,margin=2.25cm]{geometry}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{bm}
+\usepackage{booktabs,longtable,array,tabularx}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage[nameinlink,noabbrev]{cleveref}
+\usepackage{graphicx}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,shapes.geometric}
+\usepackage{listings}
+\usepackage{fancyhdr}
+\usepackage{lastpage}
+\usepackage{siunitx}
+
+\definecolor{codegray}{RGB}{245,245,245}
+\definecolor{darkblue}{RGB}{20,55,100}
+\definecolor{darkgreen}{RGB}{25,105,75}
+\definecolor{darkred}{RGB}{145,40,40}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=darkblue,
+  urlcolor=darkblue,
+  citecolor=darkgreen,
+  pdftitle={Godzinowy wielozadaniowy model prognozowania jakości powietrza i pogody},
+  pdfauthor={Edward Szczypka}
+}
+
+\lstdefinestyle{code}{
+  backgroundcolor=\color{codegray},
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  columns=fullflexible,
+  showstringspaces=false,
+  keywordstyle=\color{darkblue},
+  commentstyle=\color{darkgreen},
+  stringstyle=\color{darkred}
+}
+
+\setlength{\headheight}{14pt}
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{Smog AI --- model godzinowy}
+\rhead{Edward Szczypka}
+\cfoot{\thepage/\pageref{LastPage}}
+
+\newcommand{\PMten}{\mathrm{PM}_{10}}
+\newcommand{\PMtwo}{\mathrm{PM}_{2.5}}
+\newcommand{\Rplus}{\mathbb{R}_{+}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Prob}{\mathbb{P}}
+\newcommand{\ind}{\mathbf{1}}
+\newcommand{\Loss}{\mathcal{L}}
+\newcommand{\X}{\mathbf{X}}
+\newcommand{\Y}{\mathbf{Y}}
+\newcommand{\thetaT}{\theta_T}
+\newcommand{\thetaR}{\theta_R}
+\newcommand{\thetaPM}{\theta_{\mathrm{PM}}}
+
+\title{\textbf{Godzinowy, warunkowany horyzontem model prognozowania}\\
+\textbf{PM10, PM2.5, temperatury i opadu}\\[0.4em]
+\large Specyfikacja matematyczna, walidacyjna i wdrożeniowa}
+\author{Edward Szczypka\\\href{mailto:edward@szczypka.guru}{edward@szczypka.guru}}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Dokument opisuje docelowy model systemu Smog AI, w którym prognoza jest
+wyznaczana dla \emph{dokładnego czasu docelowego}, a nie przez wybór najbliższego
+z trzech dyskretnych horyzontów 6, 12 i 24 godzin. System prognozuje cztery
+wielkości:
+\[
+  \PMten,\qquad \PMtwo,\qquad T,\qquad R,
+\]
+gdzie $T$ oznacza temperaturę, a $R$ sumę opadu w jawnym okresie akumulacji
+$\Delta_R$ kończącym się w czasie docelowym. Domyślnie $\Delta_R=6$ godzin,
+zgodnie z bieżącym kontraktem danych IMGW; system nie tworzy sztucznej
+dezagregacji na wartości godzinowe. Obliczenia, trening, predykcja i
+interpolacja przestrzenna są
+wykonywane lokalnie. DigitalOcean Spaces przechowuje wersjonowane artefakty,
+a DigitalOcean App Platform wyłącznie odczytuje i prezentuje gotowe wyniki.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{Cel zmiany}
+
+Dotychczasowe modele były trenowane oddzielnie dla horyzontów
+\[
+  h\in\{6,12,24\}.
+\]
+Taki model jest poprawny wyłącznie dla czasu
+\[
+  u=t+h,
+\]
+gdzie $t$ jest czasem bazowym prognozy. Nie jest poprawne traktowanie modelu
+$h=6$ jako prognozy dla $h=22$ ani ciche wybieranie powierzchni o najbliższym
+czasie docelowym.
+
+W wersji godzinowej horyzont staje się zmienną objaśniającą:
+\[
+  h\in\{1,2,\ldots,H\},\qquad H=48.
+\]
+Model uczy się zależności pomiędzy stanem układu w chwili $t$, dokładnym
+horyzontem $h$, cechami czasu docelowego $t+h$ oraz wartością prognozowaną.
+
+\section{Notacja}
+
+Niech:
+\begin{itemize}[nosep]
+  \item $\mathcal{S}_A$ oznacza zbiór stacji jakości powietrza GIOŚ;
+  \item $\mathcal{S}_W$ oznacza zbiór stacji meteorologicznych IMGW;
+  \item $m(s)\in\mathcal{S}_W$ oznacza stację IMGW dopasowaną do stacji
+        $s\in\mathcal{S}_A$;
+  \item $t$ oznacza czas bazowy danych dostępnych przy generowaniu prognozy;
+  \item $h$ oznacza horyzont w godzinach;
+  \item $u=t+h$ oznacza dokładny czas docelowy;
+  \item $P^{10}_{s,t}$ oraz $P^{2.5}_{s,t}$ oznaczają stężenia
+        $\PMten$ i $\PMtwo$;
+  \item $T_{m,t}$ oznacza temperaturę;
+  \item $R^{(\Delta_R)}_{m,t}$ oznacza sumę opadu w okresie
+        $[t-\Delta_R,t]$; domyślnie $\Delta_R=6$ godzin.
+\end{itemize}
+
+Wektor docelowy dla stacji $s$, czasu bazowego $t$ i horyzontu $h$ ma postać:
+\begin{equation}
+  \Y_{s,t,h} =
+  \begin{bmatrix}
+    P^{10}_{s,t+h}\\
+    P^{2.5}_{s,t+h}\\
+    T_{m(s),t+h}\\
+    R^{(\Delta_R)}_{m(s),t+h}
+  \end{bmatrix}.
+  \label{eq:target-vector}
+\end{equation}
+
+\section{Dlaczego nie stosujemy globalnego wielomianu przez punkty 6/12/24 h}
+
+Wielomian drugiego stopnia przechodzący przez trzy punkty
+\[
+  (6,\widehat y_6),\quad (12,\widehat y_{12}),\quad (24,\widehat y_{24})
+\]
+jest jednoznacznie wyznaczony, lecz jego gładkość jest wyłącznie własnością
+algebraiczną. Nie uwzględnia on zmiany temperatury, opadu, wiatru, pory dnia
+ani emisji. Może więc interpolować gładko, ale fizycznie niewiarygodnie.
+
+Globalny wielomian nie jest modelem prognozowania. W projekcie dopuszczamy
+interpolację wielomianową wyłącznie na końcowym, lokalnym etapie:
+\begin{itemize}[nosep]
+  \item pomiędzy dwiema lub kilkoma \emph{już wyznaczonymi prognozami
+        godzinowymi};
+  \item bez ekstrapolacji poza zakres dostępnych prognoz;
+  \item z jawnym oznaczeniem metody.
+\end{itemize}
+
+Domyślną metodą dla czasu niecałkowitego jest PCHIP, czyli przedziałowy
+wielomian Hermite'a zachowujący lokalny kształt. Dla zapytania o pełną godzinę
+interpolacja czasowa nie jest potrzebna.
+
+\section{Architektura modelu}
+
+\subsection{Model kaskadowy}
+
+Ze względu na różny charakter zmiennych nie stosujemy jednej wspólnej funkcji
+straty dla wszystkich czterech wyjść. Domyślną architekturą jest kaskada:
+
+\begin{enumerate}
+  \item model temperatury;
+  \item dwuetapowy model opadu;
+  \item modele $\PMten$ i $\PMtwo$, które korzystają z prognozowanej
+        temperatury i prognozowanego opadu dla czasu docelowego.
+\end{enumerate}
+
+\begin{figure}[ht]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+  node distance=10mm and 14mm,
+  block/.style={draw, rounded corners, align=center, minimum width=37mm,
+                minimum height=10mm, fill=blue!5},
+  data/.style={draw, rounded corners, align=center, minimum width=37mm,
+               minimum height=10mm, fill=green!7},
+  arrow/.style={-{Latex[length=2.2mm]}, thick}
+]
+\node[data] (x) {Cechy dostępne\\w czasie $t$};
+\node[block, right=of x, yshift=13mm] (temp) {Model temperatury\\$\widehat T_{t+h}$};
+\node[block, right=of x, yshift=-13mm] (rain) {Model opadu\\$\widehat\pi_{t+h},\widehat A_{t+h}$};
+\node[block, right=30mm of temp, yshift=-13mm] (pm) {Modele jakości powietrza\\
+$\widehat{\PMten}_{t+h}$, $\widehat{\PMtwo}_{t+h}$};
+\node[data, right=of pm] (out) {Prognoza godzinowa\\i przedziały niepewności};
+
+\draw[arrow] (x) -- node[above,sloped] {$h,\phi(t+h)$} (temp);
+\draw[arrow] (x) -- node[below,sloped] {$h,\phi(t+h)$} (rain);
+\draw[arrow] (x) -- (pm);
+\draw[arrow] (temp) -- (pm);
+\draw[arrow] (rain) -- (pm);
+\draw[arrow] (pm) -- (out);
+\draw[arrow] (temp.east) |- (out.north);
+\draw[arrow] (rain.east) |- (out.south);
+\end{tikzpicture}%
+}
+\caption{Kaskadowa architektura modelu godzinowego.}
+\end{figure}
+
+\subsection{Cechy czasu docelowego}
+
+Czas docelowy $u=t+h$ jest kodowany cyklicznie:
+\begin{align}
+  \phi_{\mathrm{hour},1}(u) &= \sin\left(2\pi\frac{\operatorname{hour}(u)}{24}\right),\\
+  \phi_{\mathrm{hour},2}(u) &= \cos\left(2\pi\frac{\operatorname{hour}(u)}{24}\right),\\
+  \phi_{\mathrm{dow},1}(u) &= \sin\left(2\pi\frac{\operatorname{dow}(u)}{7}\right),\\
+  \phi_{\mathrm{dow},2}(u) &= \cos\left(2\pi\frac{\operatorname{dow}(u)}{7}\right),\\
+  \phi_{\mathrm{year},1}(u) &= \sin\left(2\pi\frac{\operatorname{doy}(u)}{365.2425}\right),\\
+  \phi_{\mathrm{year},2}(u) &= \cos\left(2\pi\frac{\operatorname{doy}(u)}{365.2425}\right).
+\end{align}
+
+Horyzont $h$ jest wprowadzany jawnie oraz opcjonalnie przez bazę funkcji:
+\[
+  1,\quad h,\quad h^2,\quad \log(1+h),\quad \sqrt{h}.
+\]
+Nie oznacza to globalnej regresji wielomianowej po wyniku. Są to jedynie cechy,
+z których nieliniowy model może skorzystać, jeżeli poprawiają walidację.
+
+\section{Model temperatury}
+
+Model temperatury ma postać:
+\begin{equation}
+  \widehat T_{s,t,h}
+  =
+  f_T\!\left(
+    \X^{\mathrm{weather}}_{m(s),t},
+    h,
+    \phi(t+h),
+    z_{m(s)},
+    \operatorname{lat}_{m(s)},
+    \operatorname{lon}_{m(s)}
+  \right).
+  \label{eq:temperature-model}
+\end{equation}
+
+Wektor $\X^{\mathrm{weather}}$ zawiera między innymi:
+\[
+  T_{t-1},T_{t-3},T_{t-6},T_{t-12},T_{t-24},
+\]
+średnie kroczące, trend temperatury, wilgotność, ciśnienie, wiatr i opad.
+
+Domyślnym estymatorem jest histogramowy gradient boosting. Modele bazowe:
+\begin{align}
+  \widehat T^{\mathrm{pers}}_{t+h} &= T_t,\\
+  \widehat T^{\mathrm{season}}_{t+h} &=
+  \operatorname{median}\{T_{\tau}:
+  \operatorname{hour}(\tau)=\operatorname{hour}(t+h),
+  \operatorname{month}(\tau)=\operatorname{month}(t+h)\}.
+\end{align}
+
+Dla estymacji punktowej stosujemy MAE lub stratę kwadratową, a dla przedziałów
+predykcji osobne modele kwantylowe:
+\begin{equation}
+  \rho_\tau(e)=
+  \begin{cases}
+    \tau e, & e\ge 0,\\
+    (\tau-1)e, & e<0.
+  \end{cases}
+\end{equation}
+
+\section{Dwuetapowy model opadu}
+
+Opad ma rozkład z dużą masą w zerze i silną prawostronną asymetrią. Dlatego
+stosujemy model typu \emph{hurdle}.
+
+Niech $\delta\ge 0$ będzie progiem mierzalnego opadu, np.
+$\delta=\SI{0.1}{\milli\meter}$. Definiujemy:
+\begin{equation}
+  Z_{s,t,h}=\ind\{R^{(\Delta_R)}_{m(s),t+h}>\delta\}.
+\end{equation}
+
+\subsection{Prawdopodobieństwo wystąpienia opadu}
+
+\begin{equation}
+  \widehat\pi_{s,t,h}
+  =
+  \Prob(Z_{s,t,h}=1\mid \X_{s,t},h,\phi(t+h))
+  =
+  \sigma\!\left(f_\pi(\X_{s,t},h,\phi(t+h))\right),
+\end{equation}
+gdzie $\sigma$ oznacza funkcję logistyczną. Strata:
+\begin{equation}
+  \Loss_{\mathrm{occ}}
+  =
+  -\sum_i
+  \left[
+    z_i\log\widehat\pi_i+
+    (1-z_i)\log(1-\widehat\pi_i)
+  \right].
+\end{equation}
+
+\subsection{Warunkowa wielkość opadu}
+
+Dla obserwacji dodatnich:
+\begin{equation}
+  A_{s,t,h}=R^{(\Delta_R)}_{m(s),t+h}\mid Z_{s,t,h}=1.
+\end{equation}
+
+Modelujemy $\E[A\mid Z=1,\X,h]$ regresją dodatnią, np. z funkcją łączącą
+logarytmiczną lub przez transformację $\log(1+A)$. Prognoza średniego opadu:
+\begin{equation}
+  \widehat R_{s,t,h}
+  =
+  \widehat\pi_{s,t,h}\,\widehat\mu_{A,s,t,h}.
+  \label{eq:rain-expectation}
+\end{equation}
+
+Oprócz wartości oczekiwanej aplikacja pokazuje:
+\[
+  \widehat\pi_{s,t,h},
+  \qquad
+  \widehat\mu_{A,s,t,h},
+  \qquad
+  \widehat R_{s,t,h}.
+\]
+
+\paragraph{Semantyka okresu akumulacji.}
+Wartość $\widehat R_{s,t,h}$ nie oznacza natężenia w mm/h, lecz akumulację
+w przedziale długości $\Delta_R$ kończącym się w $t+h$. Okres jest częścią
+kontraktu modelu, artefaktu i odpowiedzi API. Zmiana źródła danych może ustawić
+$\Delta_R=1$ godzinę, ale nie wolno bezpośrednio dzielić pomiaru sześciogodzinnego
+przez sześć.
+Dzięki temu wartość \SI{0.4}{\milli\meter} nie jest mylnie interpretowana jako
+pewny, ciągły opad.
+
+\section{Modele PM10 i PM2.5}
+
+Dla $k\in\{10,2.5\}$:
+\begin{equation}
+  \widehat P^{k}_{s,t,h}
+  =
+  f_k\!\left(
+    \X^{\mathrm{air}}_{s,t},
+    \X^{\mathrm{weather}}_{m(s),t},
+    h,
+    \phi(t+h),
+    \widehat T_{s,t,h},
+    \widehat R_{s,t,h},
+    \widehat\pi_{s,t,h},
+    \operatorname{lat}_s,
+    \operatorname{lon}_s
+  \right).
+  \label{eq:pm-model}
+\end{equation}
+
+Cechy jakości powietrza obejmują opóźnienia, średnie kroczące, tempo zmian
+oraz informacje z pobliskich stacji. Prognozowana temperatura i opad są
+cechami czasu docelowego, a nie obserwacjami pobranymi z przyszłości.
+
+\section{Ochrona przed wyciekiem informacji}
+
+Najważniejszym niezmiennikiem jest:
+\[
+  \text{każda cecha użyta w prognozie utworzonej w chwili }t
+  \text{ musi być dostępna w chwili }t.
+\]
+
+Nie wolno trenować modelu PM na rzeczywistej temperaturze z chwili $t+h$,
+jeżeli w produkcji dostępna będzie tylko jej prognoza. Zastosowana zostanie
+chronologiczna predykcja krzyżowa:
+
+\begin{enumerate}
+  \item dzielimy czasy bazowe na uporządkowane bloki
+        $I_1<I_2<\cdots<I_K$;
+  \item dla bloku $I_j$ model pogodowy jest trenowany wyłącznie na blokach
+        wcześniejszych;
+  \item generujemy prognozy
+        $\widetilde T_i,\widetilde R_i,\widetilde\pi_i$ dla $i\in I_j$;
+  \item modele PM są trenowane na tych prognozach, nie na rzeczywistej
+        pogodzie z przyszłości.
+\end{enumerate}
+
+Formalnie:
+\begin{equation}
+  \widetilde T_i =
+  f_T^{(-j)}(\X_i,h_i),\qquad i\in I_j,
+\end{equation}
+gdzie $f_T^{(-j)}$ nie widziało żadnej obserwacji z bloku $I_j$ ani z bloków
+późniejszych.
+
+\section{Podział chronologiczny i ocena}
+
+Nie stosujemy losowego podziału. Używamy walidacji typu rolling origin lub
+expanding window:
+\[
+  \underbrace{[1,\ldots,t_1]}_{\text{trening}}
+  \rightarrow
+  \underbrace{[t_1+1,\ldots,t_2]}_{\text{walidacja}},
+\]
+następnie powiększamy zbiór treningowy.
+
+Metryki są obliczane:
+\begin{itemize}[nosep]
+  \item osobno dla każdej zmiennej;
+  \item osobno dla każdego horyzontu $h=1,\ldots,48$;
+  \item według stacji, pory dnia, sezonu i warunków pogodowych;
+  \item łącznie i względem modelu bazowego.
+\end{itemize}
+
+Dla temperatury i PM:
+\begin{align}
+  \operatorname{MAE} &=
+  \frac{1}{n}\sum_{i=1}^{n}|y_i-\widehat y_i|,\\
+  \operatorname{RMSE} &=
+  \sqrt{\frac{1}{n}\sum_{i=1}^{n}(y_i-\widehat y_i)^2},\\
+  R^2 &=1-\frac{\sum_i(y_i-\widehat y_i)^2}
+                   {\sum_i(y_i-\overline y)^2}.
+\end{align}
+
+Dla opadu:
+\begin{itemize}[nosep]
+  \item Brier score i ROC-AUC dla wystąpienia opadu;
+  \item MAE/RMSE dla dodatniej wielkości opadu;
+  \item MAE i Tweedie deviance dla całkowitej prognozy opadu;
+  \item trafność progów, np. $R>\SI{1}{\milli\meter}$.
+\end{itemize}
+
+\section{Interpolacja czasowa}
+
+Model generuje prognozy dla każdej pełnej godziny:
+\[
+  h=1,2,\ldots,48.
+\]
+Dla zapytania o pełną godzinę wybór jest dokładny:
+\[
+  \widehat y(u)=\widehat y_{h},\qquad u=t+h.
+\]
+
+Dla zapytania np. o 17:30 dopuszczamy interpolację pomiędzy prognozami
+17:00 i 18:00. Domyślnie:
+\begin{itemize}[nosep]
+  \item interpolacja liniowa przy dwóch sąsiednich punktach;
+  \item PCHIP przy wystarczającej liczbie sąsiednich prognoz;
+  \item brak ekstrapolacji poza $[t+1,t+48]$.
+\end{itemize}
+
+API zwraca:
+\begin{lstlisting}[style=code]
+{
+  "requested_target_time": "...",
+  "selected_target_time": "...",
+  "forecast_origin_time": "...",
+  "horizon_hours": 22.0,
+  "exact_time_match": true,
+  "temporal_method": "direct_hourly_model"
+}
+\end{lstlisting}
+
+\section{Interpolacja przestrzenna}
+
+Dla ustalonego czasu docelowego $u$ i zmiennej $y$ otrzymujemy prognozy
+punktowe $\widehat y_i(u)$ dla stacji $i=1,\ldots,n$. W wariancie IDW:
+\begin{align}
+  w_i(x) &= \frac{1}{(d(x,x_i)+\varepsilon)^p},\\
+  \widehat y(x,u)
+  &=
+  \frac{\sum_{i\in\mathcal N_k(x)}w_i(x)\widehat y_i(u)}
+       {\sum_{i\in\mathcal N_k(x)}w_i(x)}.
+  \label{eq:idw}
+\end{align}
+
+Dla opadu interpolujemy oddzielnie:
+\[
+  \widehat\pi(x,u)
+  \quad\text{oraz}\quad
+  \widehat\mu_A(x,u),
+\]
+a następnie:
+\[
+  \widehat R(x,u)=\widehat\pi(x,u)\widehat\mu_A(x,u).
+\]
+Ogranicza to sztuczne rozsmarowywanie niewielkiego opadu na cały kraj.
+
+Dla temperatury możliwa jest opcjonalna korekta wysokościowa:
+\begin{equation}
+  \widehat T^{\,*}_i(u;x)
+  =
+  \widehat T_i(u)+\gamma\bigl(z_i-z(x)\bigr),
+\end{equation}
+gdzie $\gamma$ jest estymowany na danych walidacyjnych, a nie przyjmowany
+bezkrytycznie jako stały gradient atmosferyczny.
+
+\section{Niepewność}
+
+Dla każdej zmiennej przewidujemy kwantyle, np.
+\[
+  q_{0.10}(x,u),\quad q_{0.50}(x,u),\quad q_{0.90}(x,u).
+\]
+Przedział 80\%:
+\[
+  I_{0.8}(x,u)=
+  [q_{0.10}(x,u),q_{0.90}(x,u)].
+\]
+
+Warstwa przestrzenna dodaje niepewność wynikającą z odległości od stacji,
+liczby sąsiadów i walidacji leave-one-station-out. W uproszczonym wariancie:
+\begin{equation}
+  \sigma_{\mathrm{total}}^2(x,u)
+  =
+  \sigma_{\mathrm{model}}^2(x,u)
+  +
+  \sigma_{\mathrm{spatial}}^2(x,u).
+\end{equation}
+
+\section{Aktywacja modelu}
+
+Model nie jest aktywowany tylko dlatego, że został wytrenowany. Dla każdej
+zmiennej porównujemy go z modelem bazowym. Przykładowy warunek:
+\begin{equation}
+  \frac{\operatorname{MAE}_{\mathrm{base}}-
+        \operatorname{MAE}_{\mathrm{candidate}}}
+       {\operatorname{MAE}_{\mathrm{base}}}
+  \ge \eta,
+\end{equation}
+gdzie $\eta$ jest minimalną wymaganą poprawą.
+
+Dodatkowe warunki:
+\begin{itemize}[nosep]
+  \item brak regresji jakości dla krytycznych horyzontów;
+  \item poprawne pokrycie przedziałów kwantylowych;
+  \item brak niefizycznych wartości;
+  \item zgodność schematu cech i wersji danych;
+  \item przejście testu predykcji kontrolnej.
+\end{itemize}
+
+\section{Artefakty i DigitalOcean Spaces}
+
+Wyniki są indeksowane przez dokładny czas:
+\begin{lstlisting}[style=code]
+hourly/
+  models/
+    temperature/active.json
+    precipitation/active.json
+    PM10/active.json
+    PM2.5/active.json
+  forecasts/
+    origin=2026-08-03T10-00-00Z/
+      target=2026-08-03T11-00-00Z/
+      ...
+      target=2026-08-05T10-00-00Z/
+  maps/
+    origin=.../
+      target=.../
+        PM10/surface.json.gz
+        PM2.5/surface.json.gz
+        temperature_c/surface.json.gz
+        precipitation_probability/surface.json.gz
+        precipitation_mm/surface.json.gz
+\end{lstlisting}
+
+App Platform nie wykonuje modelu. Odczytuje dokładny pakiet dla
+\texttt{target\_time}. Jeżeli pakiet nie istnieje, zwraca informację o braku
+prognozy; nie wybiera po cichu najbliższego czasu.
+
+\section{Informacja prezentowana użytkownikowi}
+
+Dla każdego wyniku interfejs pokazuje:
+\begin{itemize}[nosep]
+  \item czas bazowy;
+  \item dokładny czas docelowy;
+  \item horyzont w godzinach;
+  \item metodę prognozy;
+  \item wersję każdego modelu;
+  \item PM10, PM2.5, temperaturę i opad;
+  \item prawdopodobieństwo opadu;
+  \item przedziały niepewności;
+  \item współrzędne punktu zapytania;
+  \item współrzędne środka komórki siatki;
+  \item odległość pomiędzy punktami;
+  \item algorytm interpolacji przestrzennej i liczbę stacji.
+\end{itemize}
+
+\section{Dokumentacja dostępna na platformie}
+
+Platforma udostępnia:
+\begin{itemize}[nosep]
+  \item zakładkę \emph{Model matematyczny};
+  \item zakładkę \emph{Jak działa przetwarzanie};
+  \item endpoint \texttt{GET /api/v1/docs/mathematics};
+  \item endpoint \texttt{GET /api/v1/docs/processing};
+  \item pobranie źródła \LaTeX;
+  \item opcjonalne pobranie skompilowanego PDF.
+\end{itemize}
+
+\section{Wymagania danych}
+
+Bieżący endpoint SYNOP daje najnowszą obserwację, co nie wystarcza do
+trenowania modeli pogodowych. Pipeline powinien automatycznie uzupełnić
+historię z oficjalnych, miesięcznych archiwów terminowych IMGW. Minimalny
+praktyczny zakres pilota:
+\begin{itemize}[nosep]
+  \item co najmniej 3--6 miesięcy danych godzinowych dla testu technicznego;
+  \item pełny rok dla uchwycenia sezonowości;
+  \item preferowane 2--3 lata dla stabilniejszej walidacji.
+\end{itemize}
+
+Jeżeli historia jest niewystarczająca, system nie może udawać modelu
+produkcyjnego. Powinien aktywować jawny fallback i wyświetlać status
+\texttt{insufficient\_history}.
+
+\section{Konfiguracja referencyjna}
+
+\begin{lstlisting}[style=code]
+hourly_forecasting:
+  enabled: true
+  min_horizon_hours: 1
+  max_horizon_hours: 48
+  step_hours: 1
+  exact_target_time_required: true
+  temporal_interpolation: pchip
+  allow_extrapolation: false
+  targets:
+    - PM10
+    - PM2.5
+    - temperature_c
+    - precipitation_mm
+  precipitation:
+    occurrence_threshold_mm: 0.1
+    model: hurdle
+  uncertainty:
+    quantiles: [0.10, 0.50, 0.90]
+  validation:
+    strategy: expanding_window
+    cross_fit_weather_for_pm: true
+    minimum_folds: 3
+\end{lstlisting}
+
+\section{Kryteria odbioru}
+
+Zmiana jest ukończona, gdy:
+\begin{enumerate}
+  \item prognozy istnieją dla każdej godziny $1,\ldots,48$;
+  \item temperatura i opad są pełnoprawnymi celami;
+  \item zapytanie o godzinę nie wybiera najbliższego modelu 6/12/24;
+  \item modele PM korzystają z prognoz pogodowych uzyskanych bez wycieku;
+  \item PCHIP jest używany wyłącznie pomiędzy sąsiednimi godzinami;
+  \item opad ma osobny model wystąpienia i wielkości;
+  \item metryki są liczone dla każdej zmiennej i każdego horyzontu;
+  \item powierzchnie mapy są wersjonowane przez \texttt{target\_time};
+  \item API i UI pokazują czas bazowy, docelowy oraz metodę;
+  \item dokument matematyczny jest dostępny w aplikacji i jako plik \LaTeX.
+\end{enumerate}
+
+\begin{thebibliography}{9}
+
+\bibitem{sklearn-hgbr}
+Scikit-learn developers,
+\emph{HistGradientBoostingRegressor --- official documentation}.
+Dokumentacja opisuje m.in. straty Poissona, gamma oraz kwantylową.
+
+\bibitem{sklearn-tweedie}
+Scikit-learn developers,
+\emph{TweedieRegressor --- official documentation}.
+Uogólniony model liniowy z rozkładem Tweediego.
+
+\bibitem{sklearn-ts}
+Scikit-learn developers,
+\emph{TimeSeriesSplit --- official documentation}.
+Chronologiczna walidacja bez trenowania na przyszłości.
+
+\bibitem{scipy-pchip}
+SciPy developers,
+\emph{PchipInterpolator --- official documentation}.
+Przedziałowa interpolacja Hermite'a zachowująca lokalny kształt.
+
+\bibitem{imgw-open}
+IMGW-PIB,
+\emph{Dane pomiarowo-obserwacyjne: terminowe dane synoptyczne}.
+Oficjalne miesięczne archiwa danych meteorologicznych.
+
+\end{thebibliography}
+
+
+
+\section{Ograniczona próba i uczenie przyrostowe}
+
+Niech $\mathcal D$ oznacza kompletne archiwum. Polityka selekcji tworzy
+ograniczoną próbę
+\begin{equation}
+ \mathcal D_{\mathrm{train}}
+ = S_{\mathrm{policy}}(\mathcal D;\,p,B),
+\end{equation}
+gdzie $p$ oznacza profil, a $B$ budżet liczby rekordów i czasu. Selekcja nie
+usuwa danych źródłowych.
+
+Waga przykładu:
+\begin{equation}
+ w_i = 2^{-a_i/\tau}
+       n_{s(i)}^{-1/2}
+       n_{h(i)}^{-1/2}.
+\end{equation}
+Zanik eksponencjalny wzmacnia dane najnowsze, natomiast czynniki liczebności
+równoważą stacje i horyzonty.
+
+Dla kosztownego modelu bazowego $f_\theta$ definiujemy resztę
+\begin{equation}
+ r_i=y_i-f_\theta(x_i,h_i).
+\end{equation}
+Korektor $g_\varphi$ jest aktualizowany przyrostowo, a prognoza ma postać
+\begin{equation}
+ \widehat y_i=
+ \operatorname{clip}\!\left(
+ f_\theta(x_i,h_i)+g_\varphi(z_i)
+ \right).
+\end{equation}
+Promocja następuje tylko, jeżeli
+\begin{equation}
+ \frac{\operatorname{MAE}_{\mathrm{base}}-
+       \operatorname{MAE}_{\mathrm{corrected}}}
+      {\operatorname{MAE}_{\mathrm{base}}}
+ \ge \eta.
+\end{equation}
+
+Dla dwóch kolejnych okien zweryfikowanych prognoz:
+\begin{equation}
+ \Delta_{\mathrm{MAE}}=
+ \frac{\operatorname{MAE}_{\mathrm{recent}}-
+       \operatorname{MAE}_{\mathrm{reference}}}
+      {\operatorname{MAE}_{\mathrm{reference}}}.
+\end{equation}
+Pełny trening jest rekomendowany, gdy
+$\Delta_{\mathrm{MAE}}>\delta_{\mathrm{MAE}}$ albo
+$|\operatorname{bias}_{\mathrm{recent}}|>\delta_{\mathrm{bias}}$.
+
+
+\section{Generyczna rodzina celów jakości powietrza}
+
+Niech $\mathcal P$ będzie konfigurowalnym zbiorem parametrów. Dla
+$p\in\mathcal P$ definiujemy
+\[
+ Y^{(p)}_{s,t,h}=X^{(p)}_{s,t+h}.
+\]
+Wspólny kontrakt modelu ma postać
+\[
+ \widehat Y^{(p)}_{s,t,h}=f_{p,\theta_p}
+ \left(\bm x^{(p)}_{s,t},h,\bm\phi(t+h),
+       \bm w_{s,t+h},\bm z^{(p)}_{s,t}\right),
+\]
+przy czym każdy parametr może używać innego providera i funkcji straty.
+Cechy pomocnicze spełniają warunek kauzalności
+$\sigma(\bm z_{s,t})\subseteq\mathcal F_t$.
+
+Jeżeli definicja parametru wyznacza dziedzinę $D_p$, publikowana predykcja jest
+projekcją
+\[
+ \widetilde Y^{(p)}=\Pi_{D_p}(\widehat Y^{(p)}).
+\]
+Dodanie kodu do katalogu nie powoduje treningu; koszt pojawia się dopiero po
+włączeniu roli celu. Selekcja celów pojedynczego przebiegu pozwala trenować
+nowy parametr bez dezaktywowania istniejących championów.
+
+\end{document}

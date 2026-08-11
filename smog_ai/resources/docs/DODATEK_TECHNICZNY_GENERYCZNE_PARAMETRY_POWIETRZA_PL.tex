@@ -1,0 +1,121 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[polish]{babel}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage[a4paper,margin=2.25cm]{geometry}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{booktabs,longtable,tabularx}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{enumitem}
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue}
+\lstset{basicstyle=\ttfamily\small,breaklines=true,frame=single}
+
+\title{Dodatek techniczny\\Generyczny rejestr parametrów jakości powietrza}
+\author{Edward Szczypka}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Zasada rozdzielenia ról}
+
+Dla każdego parametru $p$ definiuje się niezależne predykaty:
+\[
+ C_p,\ H_p,\ A_p,\ F_p,\ S_p\in\{0,1\},
+\]
+gdzie odpowiednio oznaczają pobieranie bieżące, historyczny backfill, rolę
+cechy pomocniczej, rolę celu prognozy oraz publikację powierzchni
+przestrzennej. W szczególności:
+\[
+ C_p=1\not\Rightarrow F_p=1.
+\]
+Pozwala to zbierać i audytować NO2 lub O3 bez automatycznego mnożenia liczby
+modeli produkcyjnych.
+
+\section{Kontrakt definicji}
+
+\begin{lstlisting}[language=Python]
+class AirParameterDefinition:
+    code: str
+    aliases: tuple[str, ...]
+    canonical_unit: str
+    cadence_hours: int
+    collect_current: bool
+    historical_backfill: bool
+    auxiliary_feature: bool
+    forecast_target: bool
+    spatial_surface: bool
+    allow_negative: bool
+    valid_min: float | None
+    valid_max: float | None
+    exceedance_threshold: float | None
+    spike_absolute: float | None
+    annual_api_indicator: str
+    prepared_archive_tokens: tuple[str, ...]
+    algorithms: tuple[str, ...]
+\end{lstlisting}
+
+Rejestr jest jedynym źródłem prawdy dla kolektorów, importu historycznego,
+walidacji, treningu, predykcji i publikacji map.
+
+\section{Aliasowanie}
+
+Funkcja normalizacji usuwa różnice wielkości liter, polskie znaki, spacje,
+podkreślenia i zapis przecinkowy. Obsługiwane są również indeksy dolne:
+\[
+ \mathrm{NO_2}\equiv\texttt{NO2},\qquad
+ \mathrm{PM2,5}\equiv\mathrm{PM2.5}.
+\]
+Nieznany parametr może zostać zachowany tylko w katalogu metadanych albo
+pobrany do audytu zgodnie z polityką \texttt{unknown\_sensor\_policy}.
+
+\section{Bridge pobierania}
+
+\begin{lstlisting}
+AirParameterRegistry
+        |
+        +-- collect_current ------> GiosCollector
+        +-- historical_backfill --> GiosHistoryImporter
+        +-- RangeAwareBackfillBridge
+        +-- local / object_store / hybrid cache
+\end{lstlisting}
+
+CLI bez jawnej listy wybiera parametry przez rolę. Zapis \texttt{ALL} oznacza
+wszystkie parametry danej roli, a nie każdy kod znaleziony przypadkowo w
+metadanych.
+
+\section{Generyczne cechy pomocnicze}
+
+Dla celu $p$ i pomocniczego parametru $q\ne p$ w chwili bazowej $t$ tworzy
+się:
+\[
+ z_q(t)=\left(q_t,q_{t-1},q_{t-6},q_{t-24}\right).
+\]
+Łączenie następuje po stacji i dokładnej godzinie. Nie wykorzystuje się
+$q_{t+h}$, dlatego konstrukcja nie powoduje wycieku informacji z przyszłości.
+
+\section{Snapshot i publiczna aplikacja}
+
+Snapshot zawiera bieżące wartości parametrów aktywnych w co najmniej jednej
+roli operacyjnej. Manifest przestrzenny publikuje dokładny zbiór dostępnych
+warstw. Parser tekstu otrzymuje ten zbiór przy każdym zapytaniu i nie może
+wybrać parametru, dla którego nie opublikowano wyników.
+
+\section{Bezpieczna sekwencja aktywacji}
+
+\begin{enumerate}[nosep]
+  \item definicja i aliasy;
+  \item pobieranie bieżące;
+  \item historia i RangeAwareBackfillBridge;
+  \item audyt pokrycia, jednostek i duplikatów;
+  \item opcjonalna rola cechy;
+  \item trening quick i brama jakości;
+  \item trening full;
+  \item powierzchnia przestrzenna i publikacja.
+\end{enumerate}
+
+\end{document}

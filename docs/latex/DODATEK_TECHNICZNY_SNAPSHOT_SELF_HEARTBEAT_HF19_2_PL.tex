@@ -1,0 +1,35 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[polish]{babel}
+\usepackage{lmodern}
+\usepackage[a4paper,margin=2.4cm]{geometry}
+\usepackage{amsmath}
+\usepackage{hyperref}
+\title{HF19.2: eliminacja samoczynnego restartu snapshotu SQLite}
+\author{Edward Szczypka}
+\date{\today}
+\begin{document}
+\maketitle
+\section{Błąd}
+Podczas kopiowania źródła $D$ proces utrzymywał odnawialną dzierżawę w tabeli
+\texttt{process\_locks}. Co $30$ sekund wykonywał zapis
+\[
+  D \leftarrow \operatorname{UPDATE}(\texttt{process\_locks}).
+\]
+SQLite Online Backup API traktował zmianę źródła jako przesłankę do restartu
+kopii. Proces snapshotu był zatem jednocześnie własnym zewnętrznym pisarzem.
+\section{Naprawa}
+W fazie kopiowania używana jest cicha dzierżawa bez heartbeat:
+\[
+  \texttt{heartbeat\_enabled}=\mathrm{false}.
+\]
+Odnawialna dzierżawa treningu rozpoczyna się dopiero po utworzeniu niezmiennego
+snapshotu. Dodatkowo obowiązują limity liczby restartów i czasu bez postępu.
+\section{Postęp}
+Raport zawiera teraz
+\texttt{pages\_copied\_current\_attempt},
+\texttt{pages\_copied\_best} oraz
+\texttt{backup\_restarts}. Brak postępu nie może być maskowany przez
+monotoniczny pasek procentowy.
+\end{document}

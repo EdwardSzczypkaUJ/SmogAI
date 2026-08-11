@@ -1,0 +1,127 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[polish]{babel}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage[a4paper,margin=2.3cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,longtable}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{enumitem}
+
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue}
+\lstset{basicstyle=\ttfamily\small,breaklines=true,frame=single}
+
+\title{Smog AI HF20: kontrakt czasu prognozy, walidacja opadu i MLOps}
+\author{Edward Szczypka}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Rozdzielenie czasu serwowania i czasu modelu}
+
+Niech $t_s$ oznacza ostatnią wspólną godzinę danych źródłowych,
+$t_c$ chwilę utworzenia prognozy, a $t_a$ najbliższą pełną godzinę ściśle po
+$t_c$. Dla leadu serwującego $\ell\in\{1,\ldots,48\}$:
+\[
+ t_{\ell}=t_a+(\ell-1)\mathrm{h}.
+\]
+Horyzont modelu wynosi:
+\[
+ h_m(\ell)=\frac{t_{\ell}-t_s}{1\mathrm{h}}.
+\]
+Przy maksymalnym wieku źródła równym $12$ godzin otrzymujemy:
+\[
+ h_{m,\max}=48+12=60.
+\]
+
+Pole \texttt{forecast\_horizon} ma znaczenie leadu użytkownika $1\ldots48$,
+natomiast \texttt{model\_horizon\_hours} jest cechą modelu i przy opóźnieniu
+źródła może należeć do zakresu $5\ldots52$ albo $13\ldots60$.
+
+\section{Warunki odrzucenia predykcji}
+
+Predykcja zostaje odrzucona, jeżeli:
+\begin{enumerate}[nosep]
+  \item wiek danych przekracza skonfigurowany próg;
+  \item aktywny artefakt nie deklaruje wszystkich wymaganych horyzontów;
+  \item horyzont modelu przekracza $60$ godzin;
+  \item czas docelowy nie jest przyszłą pełną godziną;
+  \item siatki czasu poszczególnych parametrów nie są identyczne.
+\end{enumerate}
+
+\section{Próbkowanie treningowe}
+
+Dane surowe nie są redukowane. Redukcja dotyczy wyłącznie materializowanej
+próby treningowej. Koszyki horyzontów:
+\[
+[1,6],\ [7,12],\ [13,24],\ [25,48],\ [49,60].
+\]
+W każdym koszyku wybierana jest ograniczona liczba horyzontów dla danego czasu
+bazowego, lecz globalnie wszystkie horyzonty są reprezentowane.
+
+\section{Model hurdle opadu}
+
+Niech $Z=\mathbb{1}\{Y>\tau\}$ oznacza wystąpienie opadu, a $A=Y\mid Z=1$
+ilość opadu w okresie mokrym. Model zwraca:
+\[
+ \widehat p=P(Z=1\mid X),\qquad
+ \widehat a=\mathbb{E}[A\mid Z=1,X],\qquad
+ \widehat y=\widehat p\widehat a.
+\]
+
+Brier Skill Score względem baseline'u $b$:
+\[
+ \operatorname{BSS}_b=1-\frac{\operatorname{BS}_{model}}
+ {\operatorname{BS}_b}.
+\]
+Brama wymaga dodatniego BSS względem klimatologii i persistence, poprawy MAE,
+$\operatorname{AUC}\ge0.60$ oraz kontrolowanego biasu. Niespełnienie dowolnego
+warunku nadaje status \texttt{experimental} i blokuje publikację.
+
+\section{MLflow}
+
+MLflow jest opcjonalnym Bridge. Lokalny backend:
+\begin{lstlisting}
+C:\ProgramData\SmogAI\mlflow\mlflow.db
+C:\ProgramData\SmogAI\mlflow\artifacts
+http://127.0.0.1:5000
+\end{lstlisting}
+Rejestrowane są metryki kandydatów, konfiguracja próby, horyzonty,
+\texttt{dataset\_id}, SHA-256 i wybór modelu. Domyślny App Spec nie tworzy
+serwera MLflow w DigitalOcean, ponieważ oznaczałoby to dodatkową usługę i koszt.
+
+\section{Langfuse}
+
+Tracing jest domyślnie wyłączony. Po jawnej aktywacji każdy prompt może otrzymać
+\texttt{trace\_id}, wersję szablonu, metadane modeli i ocenę użytkownika. Bez
+Langfuse oceny są zapisywane lokalnie w append-only JSONL.
+
+\section{Polityka publikacji}
+
+Publikacja wymaga jawnej zgody. Do ObjectStore mogą trafić jedynie:
+\[
+\{\text{model},\text{karta},\text{metryki},\text{aktywny pointer},
+\text{porównanie}\}.
+\]
+Zbiór zabroniony:
+\[
+\{\text{raw data},\text{SQLite},\text{snapshot},\text{training frames},
+\text{source cache}\}.
+\]
+
+\section{Architektura DigitalOcean}
+
+\begin{lstlisting}
+local Windows pipeline
+  -> explicit approved artifacts -> DigitalOcean Spaces
+  -> FastAPI read-only service -> Streamlit dashboard
+\end{lstlisting}
+App Platform nie wykonuje treningu ani backfillu. Opcjonalny MLflow i Langfuse
+są niezależnymi decyzjami wdrożeniowymi.
+
+\end{document}

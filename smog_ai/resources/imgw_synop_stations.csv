@@ -1,0 +1,4 @@
+source_id,station_name,latitude,longitude,elevation_m,metadata_source
+# Export current official coordinates from https://klimat.imgw.pl/pl/meta-dane/ and place them here.
+# Rows intentionally remain absent rather than inventing coordinates. The application can use a
+# clearly flagged GIOŚ-city-centroid fallback until the official export is installed.

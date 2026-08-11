@@ -1,0 +1,3 @@
+.[dashboard,observability,spaces]
+folium>=0.19,<1
+streamlit-folium>=0.24,<1

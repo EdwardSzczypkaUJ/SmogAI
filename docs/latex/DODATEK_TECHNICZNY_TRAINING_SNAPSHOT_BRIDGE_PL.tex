@@ -1,0 +1,68 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[polish]{babel}
+\usepackage{lmodern,microtype}
+\usepackage[a4paper,margin=2.3cm]{geometry}
+\usepackage{amsmath,amssymb,booktabs,longtable}
+\usepackage{xcolor,hyperref,listings}
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue}
+\lstset{basicstyle=\ttfamily\small,breaklines=true,frame=single}
+\title{TrainingSnapshotBridge\\Niezmienny zbiór treningowy przy aktywnym imporcie}
+\author{Edward Szczypka}
+\date{\today}
+\begin{document}
+\maketitle
+
+\section{Problem}
+Niech $D(t)$ oznacza stan żywej bazy w chwili $t$. Bez snapshotu kolejne
+fragmenty ramki mogą pochodzić z różnych stanów $D(t_1),D(t_2)$, co narusza
+reprodukowalność eksperymentu. Definiujemy więc niezmienny dataset
+\[
+  S_k = \operatorname{Backup}_{\mathrm{SQLite}}(D(t_k)),
+\]
+identyfikowany przez parę
+\[
+  (\texttt{dataset\_id},\operatorname{SHA256}(S_k)).
+\]
+
+\section{SQLite Online Backup API}
+Kopia powstaje przez mechanizm online backup, nie przez kopiowanie pliku.
+Gwarantuje to spójny obraz bazy także przy aktywnym WAL. Snapshot jest następnie
+sprawdzany przez \texttt{PRAGMA quick\_check}, haszowany i otwierany w trybie
+\texttt{mode=ro} oraz \texttt{query\_only=ON}.
+
+\section{Rozdzielenie sesji}
+Trening używa dwóch sesji:
+\begin{itemize}
+  \item sesja odczytu wskazuje niezmienny snapshot;
+  \item krótka sesja zapisu wskazuje żywą bazę i rejestruje metadane modelu.
+\end{itemize}
+Długotrwałe dopasowanie estymatora nie utrzymuje blokady zapisu żywej SQLite.
+
+\section{Proweniencja}
+Karta modelu zawiera dokładny identyfikator datasetu, SHA-256, zakresy czasowe,
+liczby wierszy, wersję schematu Alembic i profil treningu. Umożliwia to
+odtworzenie eksperymentu oraz audyt sądowy.
+
+\section{Współbieżność}
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Proces & Źródło/odbiornik & Równoległość \\
+\midrule
+Importer & żywa SQLite & dozwolona \\
+Trening & snapshot read-only & dozwolona \\
+Rejestracja modelu & krótkie transakcje żywej SQLite & dozwolona \\
+Drugi trening & wspólny lock & zabroniona \\
+App Platform & Spaces read-only & dozwolona \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Postęp}
+Całkowity postęp ma ważenie 10\% dla tworzenia snapshotu i 90\% dla treningu.
+Backup raportuje liczbę skopiowanych stron, a trening cel, providera, fold,
+budżet czasu oraz ETA.
+
+\end{document}

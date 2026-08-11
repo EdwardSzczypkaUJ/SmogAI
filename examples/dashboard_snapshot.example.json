@@ -1,0 +1,149 @@
+{
+  "metadata": {
+    "publication_id": "WINDOWS-TRAINER-20260803T100500Z-example",
+    "schema_version": "1.1",
+    "generated_at": "2026-08-03T10:05:00Z",
+    "data_start": "2026-08-01T00:00:00Z",
+    "data_end": "2026-08-03T10:00:00Z",
+    "model_version": "2026.08.03-hourly-PM10-example,2026.08.03-hourly-PM25-example,2026.08.03-hourly-temperature_c-example,2026.08.03-hourly-precipitation_probability-example,2026.08.03-hourly-precipitation_mm-example",
+    "record_count": 5,
+    "checksum": "example-checksum",
+    "source_host_id": "WINDOWS-TRAINER"
+  },
+  "stations": [
+    {
+      "station_id": 11,
+      "source_id": "example-11",
+      "station_name": "Katowice, ul. Kossutha",
+      "city_name": "Katowice",
+      "latitude": 50.2649,
+      "longitude": 19.0238,
+      "measurements": {
+        "PM10": {
+          "value": 28.0,
+          "measurement_time": "2026-08-03T10:00:00Z"
+        },
+        "PM2.5": {
+          "value": 15.4,
+          "measurement_time": "2026-08-03T10:00:00Z"
+        }
+      },
+      "weather": {
+        "temperature_c": 21.1,
+        "precipitation_mm": 0.0,
+        "precipitation_accumulation_period_hours": 6,
+        "measurement_time": "2026-08-03T10:00:00Z"
+      },
+      "open_quality_flags": 0
+    }
+  ],
+  "forecasts": [
+    {
+      "forecast_id": 1,
+      "station_id": 11,
+      "parameter": "PM10",
+      "predicted_value": 31.4,
+      "actual_value": null,
+      "origin_time": "2026-08-03T10:00:00Z",
+      "target_time": "2026-08-04T08:00:00Z",
+      "horizon_hours": 22,
+      "forecast_created_at": "2026-08-03T10:04:00Z",
+      "model_version": "2026.08.03-hourly-PM10-example",
+      "algorithm": "horizon-conditioned-provider",
+      "verification_status": "pending",
+      "signed_error": null,
+      "absolute_error": null,
+      "verified_at": null
+    },
+    {
+      "forecast_id": 2,
+      "station_id": 11,
+      "parameter": "PM2.5",
+      "predicted_value": 18.9,
+      "actual_value": null,
+      "origin_time": "2026-08-03T10:00:00Z",
+      "target_time": "2026-08-04T08:00:00Z",
+      "horizon_hours": 22,
+      "forecast_created_at": "2026-08-03T10:04:00Z",
+      "model_version": "2026.08.03-hourly-PM25-example",
+      "algorithm": "horizon-conditioned-provider",
+      "verification_status": "pending",
+      "signed_error": null,
+      "absolute_error": null,
+      "verified_at": null
+    },
+    {
+      "forecast_id": 3,
+      "station_id": 11,
+      "parameter": "temperature_c",
+      "predicted_value": 16.8,
+      "actual_value": null,
+      "origin_time": "2026-08-03T10:00:00Z",
+      "target_time": "2026-08-04T08:00:00Z",
+      "horizon_hours": 22,
+      "forecast_created_at": "2026-08-03T10:04:00Z",
+      "model_version": "2026.08.03-hourly-temperature_c-example",
+      "algorithm": "horizon-conditioned-provider",
+      "verification_status": "pending",
+      "signed_error": null,
+      "absolute_error": null,
+      "verified_at": null
+    },
+    {
+      "forecast_id": 4,
+      "station_id": 11,
+      "parameter": "precipitation_probability",
+      "predicted_value": 0.72,
+      "actual_value": null,
+      "origin_time": "2026-08-03T10:00:00Z",
+      "target_time": "2026-08-04T08:00:00Z",
+      "horizon_hours": 22,
+      "forecast_created_at": "2026-08-03T10:04:00Z",
+      "model_version": "2026.08.03-hourly-precipitation_probability-example",
+      "algorithm": "horizon-conditioned-provider",
+      "verification_status": "pending",
+      "signed_error": null,
+      "absolute_error": null,
+      "verified_at": null
+    },
+    {
+      "forecast_id": 5,
+      "station_id": 11,
+      "parameter": "precipitation_mm",
+      "predicted_value": 2.0,
+      "actual_value": null,
+      "origin_time": "2026-08-03T10:00:00Z",
+      "target_time": "2026-08-04T08:00:00Z",
+      "horizon_hours": 22,
+      "forecast_created_at": "2026-08-03T10:04:00Z",
+      "model_version": "2026.08.03-hourly-precipitation_mm-example",
+      "algorithm": "horizon-conditioned-provider",
+      "verification_status": "pending",
+      "signed_error": null,
+      "absolute_error": null,
+      "verified_at": null
+    }
+  ],
+  "metrics": [
+    {
+      "parameter": "PM10",
+      "horizon_hours": 22,
+      "mae": 4.1,
+      "rmse": 5.3,
+      "count": 1240
+    },
+    {
+      "parameter": "temperature_c",
+      "horizon_hours": 22,
+      "mae": 1.4,
+      "rmse": 1.9,
+      "count": 980
+    }
+  ],
+  "quality_summary": {
+    "stations": 1,
+    "forecasts": 5,
+    "verified_forecasts": 0,
+    "open_flags": 0
+  }
+}

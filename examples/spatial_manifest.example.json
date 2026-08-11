@@ -1,0 +1,210 @@
+{
+  "schema_version": "1.0",
+  "surface_set_id": "20260803T100500Z-hourly-example",
+  "generated_at": "2026-08-03T10:05:00Z",
+  "source_host_id": "WINDOWS-TRAINER-EXAMPLE",
+  "value_semantics": "locally_precomputed_spatial_forecast",
+  "app_platform_processing": "read_and_present_only",
+  "forecast_mode": "horizon-conditioned-hourly",
+  "exact_target_time_available": true,
+  "precipitation": {
+    "accumulation_period_hours": 6,
+    "ending_at_target_time": true,
+    "disaggregated_to_hourly": false
+  },
+  "algorithm": "idw",
+  "grid_resolution_km": 8.0,
+  "projected_crs": "EPSG:2180",
+  "parameters": [
+    "PM10",
+    "PM2.5",
+    "temperature_c",
+    "precipitation_probability",
+    "precipitation_mm"
+  ],
+  "horizons_hours": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48
+  ],
+  "surfaces": [
+    {
+      "schema_version": "1.0",
+      "surface_id": "20260803T100000Z-PM10-h22-example",
+      "surface_set_id": "20260803T100500Z-hourly-example",
+      "parameter": "PM10",
+      "horizon_hours": 22,
+      "origin_time": "2026-08-03T10:00:00Z",
+      "target_time": "2026-08-04T08:00:00Z",
+      "generated_at": "2026-08-03T10:05:00Z",
+      "model_versions": [
+        "2026.08.03-hourly-PM10-example"
+      ],
+      "object_key": "maps/runs/surface-set=20260803T100500Z-hourly-example/parameter=PM10/horizon=22/surface.json.gz",
+      "checksum": "bf2e1f950b9fadd3c056bac3e3f1b22b110b92fb105d1846017439823821bac9",
+      "size": 2048,
+      "grid_cells": 153,
+      "station_count": 288,
+      "metrics": {
+        "algorithm": "idw",
+        "loo_mae": 2.4
+      },
+      "metadata": {
+        "grid_resolution_km": 8.0,
+        "precipitation_accumulation_period_hours": null
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "surface_id": "20260803T100000Z-PM25-h22-example",
+      "surface_set_id": "20260803T100500Z-hourly-example",
+      "parameter": "PM2.5",
+      "horizon_hours": 22,
+      "origin_time": "2026-08-03T10:00:00Z",
+      "target_time": "2026-08-04T08:00:00Z",
+      "generated_at": "2026-08-03T10:05:00Z",
+      "model_versions": [
+        "2026.08.03-hourly-PM25-example"
+      ],
+      "object_key": "maps/runs/surface-set=20260803T100500Z-hourly-example/parameter=PM25/horizon=22/surface.json.gz",
+      "checksum": "073420a76b52837722dfb4db1f3d34e19a64f427c9eb70b840f85c6bf21480a9",
+      "size": 2048,
+      "grid_cells": 153,
+      "station_count": 288,
+      "metrics": {
+        "algorithm": "idw",
+        "loo_mae": 2.4
+      },
+      "metadata": {
+        "grid_resolution_km": 8.0,
+        "precipitation_accumulation_period_hours": null
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "surface_id": "20260803T100000Z-temperature_c-h22-example",
+      "surface_set_id": "20260803T100500Z-hourly-example",
+      "parameter": "temperature_c",
+      "horizon_hours": 22,
+      "origin_time": "2026-08-03T10:00:00Z",
+      "target_time": "2026-08-04T08:00:00Z",
+      "generated_at": "2026-08-03T10:05:00Z",
+      "model_versions": [
+        "2026.08.03-hourly-temperature_c-example"
+      ],
+      "object_key": "maps/runs/surface-set=20260803T100500Z-hourly-example/parameter=temperature_c/horizon=22/surface.json.gz",
+      "checksum": "6a8cdcac6fd163dc18f8e459672bd7d05a33b20516ac47593dd560f0460a0965",
+      "size": 2048,
+      "grid_cells": 153,
+      "station_count": 288,
+      "metrics": {
+        "algorithm": "idw",
+        "loo_mae": 1.1
+      },
+      "metadata": {
+        "grid_resolution_km": 8.0,
+        "precipitation_accumulation_period_hours": null
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "surface_id": "20260803T100000Z-precipitation_probability-h22-example",
+      "surface_set_id": "20260803T100500Z-hourly-example",
+      "parameter": "precipitation_probability",
+      "horizon_hours": 22,
+      "origin_time": "2026-08-03T10:00:00Z",
+      "target_time": "2026-08-04T08:00:00Z",
+      "generated_at": "2026-08-03T10:05:00Z",
+      "model_versions": [
+        "2026.08.03-hourly-precipitation_probability-example"
+      ],
+      "object_key": "maps/runs/surface-set=20260803T100500Z-hourly-example/parameter=precipitation_probability/horizon=22/surface.json.gz",
+      "checksum": "8ebef504b8b5cdd421ff70c503855f4cfcf59cc013b116b42fbb5fa6dadb7ba8",
+      "size": 2048,
+      "grid_cells": 153,
+      "station_count": 288,
+      "metrics": {
+        "algorithm": "idw",
+        "loo_mae": 1.1
+      },
+      "metadata": {
+        "grid_resolution_km": 8.0,
+        "precipitation_accumulation_period_hours": null
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "surface_id": "20260803T100000Z-precipitation_mm-h22-example",
+      "surface_set_id": "20260803T100500Z-hourly-example",
+      "parameter": "precipitation_mm",
+      "horizon_hours": 22,
+      "origin_time": "2026-08-03T10:00:00Z",
+      "target_time": "2026-08-04T08:00:00Z",
+      "generated_at": "2026-08-03T10:05:00Z",
+      "model_versions": [
+        "2026.08.03-hourly-precipitation_mm-example"
+      ],
+      "object_key": "maps/runs/surface-set=20260803T100500Z-hourly-example/parameter=precipitation_mm/horizon=22/surface.json.gz",
+      "checksum": "9e9dd88c0f90f9956c940a947034f4ff359f24d1aaf93b316768378f913f89b5",
+      "size": 2048,
+      "grid_cells": 153,
+      "station_count": 288,
+      "metrics": {
+        "algorithm": "idw",
+        "loo_mae": 1.1
+      },
+      "metadata": {
+        "grid_resolution_km": 8.0,
+        "precipitation_accumulation_period_hours": 6
+      }
+    }
+  ],
+  "surface_errors": [],
+  "boundary_key": "maps/static/poland-boundary.geojson",
+  "places_key": "maps/static/polish-places.json"
+}

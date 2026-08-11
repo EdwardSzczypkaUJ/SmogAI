@@ -1,0 +1,1817 @@
+Jesteś seniorem Python, architektem systemów danych, inżynierem MLOps oraz specjalistą Machine Learning. Masz zaprojektować i zaimplementować pierwszą produkcyjnie sensowną wersję systemu prognozowania jakości powietrza w Polsce.
+
+Nie ograniczaj się do opisu architektury ani pseudokodu. Przygotuj kompletny, uruchamialny projekt wraz z kodem, konfiguracją, testami, skryptami instalacyjnymi i instrukcją wdrożenia.
+
+Aktualna data to 2026 rok. Przed implementacją zweryfikuj w oficjalnej dokumentacji aktualnie działające API GIOŚ i IMGW. Nie opieraj się na historycznych, potencjalnie wyłączonych endpointach.
+
+# 1. Cel systemu
+
+System ma:
+
+1. cyklicznie pobierać rzeczywiste dane jakości powietrza z GIOŚ,
+2. pobierać rzeczywiste dane meteorologiczne z IMGW,
+3. przechowywać pełną historię lokalnie,
+4. kontrolować jakość danych,
+5. dopasowywać stacje GIOŚ do najbliższych stacji IMGW,
+6. przygotowywać dane do uczenia maszynowego,
+7. trenować modele lokalnie,
+8. generować prognozy PM10 i PM2.5,
+9. zapisywać prognozy przed poznaniem rzeczywistego wyniku,
+10. później porównywać prognozy z rzeczywistymi pomiarami,
+11. obliczać błędy modeli,
+12. przygotowywać lekkie dane potrzebne do wizualizacji,
+13. przesyłać te dane na zewnętrzny serwer,
+14. prezentować wyniki w internetowym dashboardzie.
+
+Całe pobieranie danych, przetwarzanie, trenowanie modeli oraz prognozowanie ma odbywać się na komputerze lokalnym.
+
+Serwer ma służyć wyłącznie do:
+
+* odbierania gotowych wyników,
+* przechowywania danych potrzebnych do wizualizacji,
+* udostępniania dashboardu,
+* prezentowania map, wykresów, prognoz i błędów.
+
+# 2. Podział systemu
+
+Projekt podziel na dwa niezależne komponenty.
+
+## 2.1. Komponent lokalny
+
+Komponent lokalny odpowiada za:
+
+* pobieranie danych GIOŚ,
+* pobieranie danych IMGW,
+* lokalną bazę danych,
+* walidację i kontrolę jakości,
+* przygotowanie cech,
+* trenowanie modeli,
+* wykonywanie prognoz,
+* weryfikację wcześniejszych prognoz,
+* przygotowanie snapshotów dla dashboardu,
+* publikowanie danych na serwer,
+* obsługę kolejki niewysłanych publikacji,
+* wykonywanie zadań przez `cron`.
+
+Komponent lokalny ma działać na Linuxie.
+
+Preferowane środowisko:
+
+* Ubuntu lub Debian,
+* Python 3.12,
+* lokalne środowisko `.venv`,
+* SQLite,
+* `cron`,
+* skrypty Bash,
+* opcjonalnie `flock`,
+* bez Dockera, Airflow, Kafki, Celery i Kubernetes w pierwszej iteracji.
+
+## 2.2. Komponent serwerowy
+
+Komponent serwerowy odpowiada za:
+
+* odbieranie publikacji przez HTTPS,
+* uwierzytelnianie tokenem API,
+* walidację przesłanych danych,
+* idempotentne zapisywanie publikacji,
+* ochronę przed duplikatami,
+* udostępnianie danych dashboardowi,
+* prezentację wyników.
+
+Serwer nie może:
+
+* pobierać danych GIOŚ ani IMGW,
+* trenować modeli,
+* przygotowywać cech,
+* wykonywać ciężkich obliczeń,
+* przechowywać pełnych surowych danych, jeśli nie są potrzebne do wizualizacji.
+
+# 3. Harmonogram lokalny za pomocą cron
+
+System lokalny ma być uruchamiany przez standardowy `cron`.
+
+Nie używaj w pierwszej iteracji:
+
+* Airflow,
+* Prefect,
+* Celery,
+* rozbudowanych systemów orkiestracji,
+* usług chmurowych wymagających dodatkowej infrastruktury.
+
+Przygotuj przykładowy `crontab`, który realizuje następujący harmonogram:
+
+## Co godzinę
+
+* pobranie danych GIOŚ,
+* pobranie danych IMGW,
+* kontrola jakości,
+* zapis nowych pomiarów,
+* weryfikacja wcześniejszych prognoz,
+* wykonanie nowych prognoz,
+* przygotowanie snapshotu,
+* publikacja snapshotu na serwer.
+
+Przykładowo:
+
+```cron
+7 * * * * /opt/smog-ai/scripts/run_hourly.sh
+```
+
+Nie uruchamiaj zadania dokładnie o pełnej godzinie, aby uniknąć sytuacji, w której API nie opublikowało jeszcze pełnego pomiaru.
+
+## Raz dziennie
+
+* rozbudowany raport jakości danych,
+* uzupełnienie braków,
+* ponowna próba pobrania brakujących pomiarów,
+* czyszczenie starych plików tymczasowych,
+* ponowne wysłanie niewysłanych publikacji.
+
+Przykładowo:
+
+```cron
+35 2 * * * /opt/smog-ai/scripts/run_daily.sh
+```
+
+## Raz w tygodniu
+
+* ponowne przygotowanie zbioru uczącego,
+* trenowanie modeli,
+* walidacja modeli,
+* porównanie wyników,
+* zapis nowej wersji modelu,
+* aktywacja nowego modelu tylko wtedy, gdy spełnia określone kryteria jakości.
+
+Przykładowo:
+
+```cron
+20 3 * * 0 /opt/smog-ai/scripts/run_weekly_training.sh
+```
+
+## Raz w miesiącu
+
+* pełny raport jakości,
+* archiwizacja,
+* sprawdzenie rozmiaru bazy,
+* wykonanie kopii bezpieczeństwa,
+* usunięcie bardzo starych logów zgodnie z konfiguracją.
+
+Przykładowo:
+
+```cron
+15 4 1 * * /opt/smog-ai/scripts/run_monthly.sh
+```
+
+# 4. Wymagania dotyczące cron
+
+Obsłuż profesjonalnie typowe problemy związane z `cron`.
+
+## 4.1. Pełne ścieżki
+
+Nie zakładaj, że `cron` posiada taki sam `PATH` jak użytkownik interaktywny.
+
+Każdy skrypt powinien używać pełnych ścieżek do:
+
+* katalogu projektu,
+* interpretera Python,
+* środowiska `.venv`,
+* plików konfiguracyjnych,
+* bazy danych,
+* logów.
+
+Przykład:
+
+```bash
+/opt/smog-ai/.venv/bin/python -m smog_ai pipeline
+```
+
+## 4.2. Blokada przed równoległym uruchomieniem
+
+Zadanie nie może uruchomić się drugi raz, jeśli poprzednie wykonanie nadal trwa.
+
+Zastosuj `flock`, na przykład:
+
+```bash
+/usr/bin/flock -n /var/lock/smog-ai-hourly.lock \
+    /opt/smog-ai/scripts/run_hourly_internal.sh
+```
+
+Jeśli nie uda się uzyskać blokady:
+
+* proces ma zakończyć się kontrolowanie,
+* zdarzenie ma być zapisane w logu,
+* nie należy traktować tego jako krytycznej awarii.
+
+## 4.3. Kody zakończenia
+
+Każdy skrypt i każde polecenie CLI musi zwracać poprawny kod:
+
+* `0` – sukces,
+* kod niezerowy – błąd,
+* osobny kod można zastosować dla częściowego sukcesu.
+
+## 4.4. Logowanie
+
+Każde zadanie cron ma zapisywać:
+
+* czas rozpoczęcia,
+* czas zakończenia,
+* czas wykonania,
+* identyfikator uruchomienia,
+* wykonane etapy,
+* liczbę pobranych rekordów,
+* liczbę nowych rekordów,
+* liczbę duplikatów,
+* liczbę błędów,
+* status publikacji.
+
+Logi powinny trafiać:
+
+* do katalogu `logs/`,
+* opcjonalnie do `journald` przez `logger`,
+* do osobnych plików dla zadań godzinowych, dziennych i treningowych.
+
+Zastosuj rotację logów.
+
+## 4.5. Zmienne środowiskowe
+
+`cron` nie może polegać na interaktywnym profilu użytkownika.
+
+Skrypty mają jawnie ładować konfigurację z pliku:
+
+```text
+/etc/smog-ai/smog-ai.env
+```
+
+lub:
+
+```text
+/opt/smog-ai/.env
+```
+
+Plik `.env` nie może znajdować się w repozytorium.
+
+Przykładowe zmienne:
+
+```env
+SMOG_AI_ENV=production
+SMOG_AI_CONFIG=/etc/smog-ai/config.yaml
+SMOG_AI_DATABASE_URL=sqlite:////var/lib/smog-ai/smog.db
+
+PUBLISH_API_URL=https://example.org/api/v1
+PUBLISH_API_TOKEN=...
+
+LOG_LEVEL=INFO
+TZ=Europe/Warsaw
+```
+
+## 4.6. Obsługa przerwy w działaniu komputera
+
+`cron` nie wykona zadań, gdy komputer jest wyłączony.
+
+Dlatego po każdym uruchomieniu pipeline powinien:
+
+* sprawdzić czas ostatniego udanego pobrania,
+* wykryć brakujące przedziały czasu,
+* spróbować uzupełnić możliwe dane historyczne,
+* wyraźnie oznaczyć luki, których nie da się uzupełnić,
+* nie zakładać, że poprzednie zadanie cron rzeczywiście się wykonało.
+
+Pipeline powinien być odporny na przerwy trwające wiele godzin lub dni.
+
+Opcjonalnie przygotuj konfigurację `anacron`, ale podstawowym mechanizmem ma pozostać `cron`.
+
+# 5. Idempotentny pipeline
+
+Każdy etap musi być możliwy do bezpiecznego ponownego uruchomienia.
+
+Ponowne wykonanie:
+
+```bash
+python -m smog_ai pipeline
+```
+
+nie może:
+
+* tworzyć duplikatów,
+* usuwać poprawnych danych,
+* nadpisywać historycznych prognoz,
+* przypisywać rzeczywistych wyników do niewłaściwych prognoz,
+* wielokrotnie publikować tych samych rekordów jako nowe.
+
+Każdy pipeline powinien posiadać:
+
+```text
+run_id
+started_at
+finished_at
+status
+current_stage
+records_downloaded
+records_inserted
+records_skipped
+warnings_count
+errors_count
+```
+
+Statusy:
+
+```text
+running
+success
+partial_success
+failed
+skipped_locked
+```
+
+# 6. Polecenia CLI
+
+Zastosuj Typer albo argparse.
+
+Przygotuj co najmniej:
+
+```bash
+python -m smog_ai collect-gios
+python -m smog_ai collect-imgw
+python -m smog_ai collect-all
+python -m smog_ai validate
+python -m smog_ai match-stations
+python -m smog_ai build-features
+python -m smog_ai train
+python -m smog_ai predict
+python -m smog_ai verify
+python -m smog_ai build-snapshot
+python -m smog_ai publish
+python -m smog_ai retry-publications
+python -m smog_ai report
+python -m smog_ai pipeline
+python -m smog_ai healthcheck
+```
+
+Polecenie:
+
+```bash
+python -m smog_ai pipeline
+```
+
+ma wykonać kolejno:
+
+1. kontrolę konfiguracji,
+2. kontrolę bazy,
+3. pobranie GIOŚ,
+4. pobranie IMGW,
+5. walidację danych,
+6. dopasowanie nowych stacji,
+7. weryfikację wcześniejszych prognoz,
+8. wykonanie nowych prognoz,
+9. przygotowanie snapshotu,
+10. publikację,
+11. ponowienie zaległych publikacji,
+12. zapis podsumowania.
+
+Błąd publikacji nie może powodować utraty pobranych danych ani prognoz.
+
+# 7. Lokalna baza danych
+
+W pierwszej iteracji zastosuj SQLite i SQLAlchemy 2.x.
+
+Przygotuj tabele:
+
+```text
+air_stations
+air_sensors
+air_measurements
+weather_stations
+weather_measurements
+station_matches
+collection_runs
+collection_errors
+data_quality_flags
+model_versions
+training_runs
+forecasts
+forecast_results
+publication_outbox
+published_snapshots
+application_state
+```
+
+Zadbaj o:
+
+* klucze główne,
+* indeksy,
+* ograniczenia UNIQUE,
+* klucze obce,
+* transakcje,
+* migracje Alembic,
+* tryb WAL SQLite,
+* rozsądny `busy_timeout`,
+* odporność na przerwanie procesu.
+
+Dane pomiarowe mają być unikalne co najmniej według:
+
+```text
+source
+station_id lub sensor_id
+parameter
+measurement_time
+```
+
+Prognozy mają być unikalne co najmniej według:
+
+```text
+model_version
+station_id
+parameter
+forecast_created_at
+target_time
+forecast_horizon
+```
+
+# 8. Pobieranie danych
+
+## 8.1. GIOŚ
+
+Pobierz:
+
+* stacje,
+* współrzędne,
+* sensory,
+* PM10,
+* PM2.5,
+* daty i godziny pomiarów,
+* informacje o jakości lub statusie danych, jeśli API je udostępnia.
+
+## 8.2. IMGW
+
+Pobierz, jeśli są dostępne:
+
+* temperaturę,
+* wilgotność,
+* ciśnienie,
+* opady,
+* prędkość wiatru,
+* kierunek wiatru,
+* datę i godzinę pomiaru,
+* dane stacji.
+
+Nie wymyślaj brakujących wartości.
+
+## 8.3. Niezawodność
+
+Zastosuj:
+
+* timeouty,
+* retry,
+* exponential backoff,
+* ograniczenie liczby zapytań,
+* obsługę błędów pojedynczych stacji,
+* walidację odpowiedzi,
+* zapisywanie informacji o błędach,
+* opcjonalne przechowywanie surowej odpowiedzi dla diagnostyki,
+* możliwość wznowienia pobierania.
+
+# 9. Obsługa czasu
+
+Wewnętrznie zapisuj wszystkie daty w UTC.
+
+W interfejsie prezentuj czas jako:
+
+```text
+Europe/Warsaw
+```
+
+Obsłuż:
+
+* czas letni,
+* czas zimowy,
+* zmianę czasu,
+* daty bez strefy czasowej,
+* różne konwencje GIOŚ i IMGW.
+
+Nie stosuj nieświadomie naiwnych obiektów `datetime`.
+
+Harmonogram cron może działać według czasu lokalnego, ale dane w bazie i publikacjach mają być jednoznaczne i zapisane w UTC.
+
+# 10. Dopasowanie stacji
+
+Dla każdej stacji GIOŚ znajdź najbliższą stację IMGW.
+
+Użyj wzoru Haversine.
+
+Zapisz:
+
+```text
+air_station_id
+weather_station_id
+distance_km
+matched_at
+matching_algorithm
+is_distance_acceptable
+```
+
+Maksymalna odległość powinna być konfigurowalna.
+
+Przygotuj testy jednostkowe dla obliczania odległości i dopasowania.
+
+# 11. Kontrola jakości
+
+Wykrywaj:
+
+* ujemne PM10 i PM2.5,
+* wilgotność poza zakresem 0–100%,
+* niepoprawne współrzędne,
+* niepoprawny kierunek wiatru,
+* bardzo stare pomiary,
+* brakujące wartości,
+* duplikaty,
+* niespójne znaczniki czasu,
+* nagłe skoki wartości,
+* stacje, które przestały raportować.
+
+Podejrzanych danych nie usuwaj automatycznie. Oznaczaj je flagami jakości.
+
+Po każdym uruchomieniu wygeneruj raport:
+
+* liczba stacji,
+* liczba sensorów,
+* liczba pomiarów,
+* liczba nowych rekordów,
+* liczba duplikatów,
+* liczba braków,
+* liczba błędów,
+* zakres czasowy danych,
+* procent aktualnych stacji,
+* liczba prognoz,
+* liczba zweryfikowanych prognoz,
+* wynik publikacji.
+
+# 12. Machine Learning
+
+W pierwszej wersji przygotuj działające modele bazowe:
+
+1. persistence:
+
+   * przyszłe PM10 = ostatnie PM10,
+2. średnia historyczna,
+3. model klasyczny, np. HistGradientBoosting, XGBoost albo LightGBM,
+4. prosta sieć MLP.
+
+System ma być przygotowany pod późniejsze:
+
+* LSTM,
+* TCN,
+* Transformer czasowy,
+* czasoprzestrzenną sieć grafową.
+
+Modele mają przewidywać:
+
+* PM10 za 6 godzin,
+* PM10 za 12 godzin,
+* PM10 za 24 godziny,
+* opcjonalnie analogicznie PM2.5.
+
+Przygotuj cechy:
+
+* wartości opóźnione,
+* średnie kroczące,
+* tempo zmian,
+* temperatura,
+* wilgotność,
+* ciśnienie,
+* opady,
+* prędkość wiatru,
+* składowe kierunku wiatru,
+* godzina,
+* dzień tygodnia,
+* miesiąc,
+* lokalizacja,
+* dane pobliskich stacji.
+
+Podział danych musi być chronologiczny. Nie stosuj losowego podziału szeregów czasowych.
+
+Każda prognoza musi być zapisana przed poznaniem wyniku.
+
+# 13. Weryfikacja prognoz
+
+Po pojawieniu się rzeczywistego pomiaru system ma uzupełnić:
+
+```text
+actual_value
+signed_error
+absolute_error
+squared_error
+verified_at
+verification_status
+```
+
+Obliczaj:
+
+* MAE,
+* RMSE,
+* R²,
+* MAPE, jeśli matematycznie ma sens,
+* błąd względem modelu persistence,
+* trafność przewidywania przekroczeń,
+* wyniki według stacji,
+* wyniki według pory dnia,
+* wyniki według horyzontu prognozy,
+* wyniki według warunków pogodowych.
+
+# 14. Publikowanie na serwer
+
+Na serwer wysyłaj tylko dane potrzebne do wizualizacji.
+
+Nie wysyłaj:
+
+* pełnych surowych odpowiedzi API,
+* pełnej lokalnej bazy,
+* zbiorów treningowych,
+* kodu modelu,
+* danych pośrednich,
+* plików tymczasowych.
+
+Publikacja może mieć postać:
+
+```text
+dashboard_snapshot.json.gz
+```
+
+lub:
+
+```text
+dashboard_snapshot.parquet
+```
+
+Każda publikacja musi zawierać metadane:
+
+```text
+publication_id
+schema_version
+generated_at
+data_start
+data_end
+model_version
+record_count
+checksum
+source_host_id
+```
+
+Publikacja musi być idempotentna.
+
+Ponowne wysłanie tej samej paczki nie może tworzyć duplikatu.
+
+# 15. Outbox
+
+Zaimplementuj lokalną tabelę:
+
+```text
+publication_outbox
+```
+
+Pola:
+
+```text
+id
+publication_id
+payload_path
+payload_type
+checksum
+created_at
+attempt_count
+last_attempt_at
+next_attempt_at
+last_error
+status
+published_at
+```
+
+Statusy:
+
+```text
+pending
+sending
+published
+failed
+dead_letter
+```
+
+W razie braku internetu:
+
+* dane mają zostać zachowane lokalnie,
+* publikacja ma pozostać w outboxie,
+* kolejne zadanie cron ma ponowić wysyłkę,
+* próby mają stosować exponential backoff,
+* po określonej liczbie prób wpis może przejść do `dead_letter`,
+* administrator ma mieć polecenie ręcznego ponowienia.
+
+# 16. Serwer API
+
+Zastosuj FastAPI.
+
+Przygotuj endpoint:
+
+```http
+POST /api/v1/snapshots
+```
+
+Opcjonalnie:
+
+```http
+GET /api/v1/health
+GET /api/v1/snapshots/latest
+GET /api/v1/stations
+GET /api/v1/forecasts
+GET /api/v1/metrics
+```
+
+Serwer ma:
+
+* wymagać tokenu Bearer,
+* walidować schemat,
+* sprawdzać checksum,
+* ograniczać wielkość pliku,
+* chronić przed duplikatami,
+* zapisywać plik tymczasowo,
+* publikować go atomowo,
+* zachowywać kilka poprzednich wersji,
+* prowadzić log audytowy publikacji.
+
+Nie wystawiaj PostgreSQL ani SQLite bezpośrednio do Internetu.
+
+# 17. Dashboard
+
+Zastosuj Streamlit i Plotly.
+
+Dashboard ma pokazywać:
+
+* aktualne PM10 i PM2.5,
+* prognozy na 6, 12 i 24 godzin,
+* prognozy oczekujące na weryfikację,
+* prognozy już zweryfikowane,
+* wartość rzeczywistą,
+* wartość przewidywaną,
+* różnicę prognoza minus rzeczywistość,
+* MAE,
+* RMSE,
+* ranking modeli,
+* ranking stacji,
+* historię dla wybranej stacji,
+* dane pogodowe,
+* wersję modelu,
+* czas wygenerowania publikacji,
+* informację o aktualności danych.
+
+Mapa Polski powinna posiadać warstwy:
+
+```text
+wartości rzeczywiste
+prognoza
+błąd prognozy
+błąd bezwzględny
+PM10
+PM2.5
+```
+
+Po wskazaniu stacji pokaż:
+
+* nazwę,
+* czas pomiaru,
+* wartość rzeczywistą,
+* prognozę,
+* błąd,
+* pogodę,
+* jakość danych,
+* wersję modelu.
+
+# 18. Skrypty Bash
+
+Przygotuj kompletne skrypty:
+
+```text
+scripts/run_hourly.sh
+scripts/run_daily.sh
+scripts/run_weekly_training.sh
+scripts/run_monthly.sh
+scripts/install_cron.sh
+scripts/remove_cron.sh
+scripts/healthcheck.sh
+scripts/backup.sh
+```
+
+Każdy skrypt powinien zawierać:
+
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+```
+
+oraz:
+
+* poprawną obsługę błędów,
+* logowanie,
+* pełne ścieżki,
+* blokadę `flock`,
+* ładowanie `.env`,
+* przejście do katalogu projektu,
+* użycie interpretera z `.venv`,
+* propagowanie kodu zakończenia.
+
+# 19. Instalator cron
+
+Przygotuj skrypt:
+
+```bash
+scripts/install_cron.sh
+```
+
+który:
+
+* sprawdza wymagania,
+* tworzy potrzebne katalogi,
+* nadaje prawa wykonywania,
+* instaluje wpisy w crontabie,
+* oznacza wpisy komentarzami,
+* nie tworzy duplikatów,
+* wykonuje kopię poprzedniego crontaba,
+* pokazuje zainstalowany harmonogram.
+
+Wpisy powinny być oznaczone:
+
+```text
+# BEGIN SMOG-AI
+...
+# END SMOG-AI
+```
+
+Przygotuj również bezpieczny skrypt usuwający wyłącznie ten blok.
+
+# 20. Monitoring i healthcheck
+
+Polecenie:
+
+```bash
+python -m smog_ai healthcheck
+```
+
+ma sprawdzać:
+
+* dostępność bazy,
+* czas ostatniego udanego pobrania,
+* czas ostatniej prognozy,
+* czas ostatniej publikacji,
+* liczbę oczekujących elementów outbox,
+* liczbę ostatnich błędów,
+* wolne miejsce na dysku,
+* rozmiar bazy,
+* istnienie aktywnego modelu,
+* dostępność serwera publikacyjnego.
+
+Wynik powinien być czytelny dla człowieka i opcjonalnie dostępny jako JSON.
+
+Healthcheck ma zwracać kod niezerowy przy problemie krytycznym.
+
+# 21. Kopie bezpieczeństwa
+
+Przygotuj lokalny mechanizm kopii:
+
+* SQLite backup API albo bezpieczna kopia po checkpoint WAL,
+* kompresja,
+* suma SHA-256,
+* retencja,
+* raport błędów.
+
+Przykładowa retencja:
+
+* 7 kopii dziennych,
+* 8 tygodniowych,
+* 12 miesięcznych.
+
+# 22. Bezpieczeństwo
+
+Zastosuj:
+
+* HTTPS,
+* token API w `.env`,
+* brak sekretów w repozytorium,
+* osobny token tylko do publikacji,
+* walidację danych,
+* limit rozmiaru paczki,
+* limit liczby żądań,
+* logowanie prób publikacji,
+* prostą możliwość zmiany tokenu,
+* brak bezpośredniego dostępu do bazy przez Internet.
+
+# 23. Testy
+
+Zastosuj pytest.
+
+Przygotuj testy dla:
+
+* parsera GIOŚ,
+* parsera IMGW,
+* czasu i stref czasowych,
+* Haversine,
+* dopasowania stacji,
+* walidacji danych,
+* deduplikacji,
+* SQLite,
+* pipeline’u,
+* blokady przed równoległym wykonaniem,
+* outboxa,
+* ponawiania publikacji,
+* idempotentności API,
+* weryfikacji checksum,
+* zapisu i weryfikacji prognozy,
+* generowania snapshotu.
+
+Testy API zewnętrznych mają używać mocków i zapisanych odpowiedzi.
+
+# 24. Struktura projektu
+
+Przygotuj strukturę zbliżoną do:
+
+```text
+smog-ai/
+├── pyproject.toml
+├── requirements.txt
+├── README.md
+├── .env.example
+├── config.example.yaml
+├── alembic.ini
+├── crontab.example
+├── scripts/
+│   ├── run_hourly.sh
+│   ├── run_daily.sh
+│   ├── run_weekly_training.sh
+│   ├── run_monthly.sh
+│   ├── install_cron.sh
+│   ├── remove_cron.sh
+│   ├── healthcheck.sh
+│   └── backup.sh
+├── smog_ai/
+│   ├── __init__.py
+│   ├── __main__.py
+│   ├── cli.py
+│   ├── config.py
+│   ├── logging_config.py
+│   ├── database/
+│   ├── collectors/
+│   ├── processing/
+│   ├── features/
+│   ├── training/
+│   ├── prediction/
+│   ├── publishing/
+│   ├── reports/
+│   └── monitoring/
+├── server/
+│   ├── api/
+│   ├── dashboard/
+│   ├── database/
+│   └── tests/
+├── migrations/
+├── tests/
+├── data/
+├── models/
+├── snapshots/
+├── logs/
+└── backups/
+```
+
+Możesz zmienić strukturę, jeśli przedstawisz sensowne uzasadnienie.
+
+# 25. Wymagany wynik odpowiedzi
+
+Dostarcz:
+
+1. zweryfikowane aktualne źródła GIOŚ i IMGW,
+2. opis architektury,
+3. diagram przepływu danych,
+4. kompletne drzewo katalogów,
+5. pełną treść wszystkich wymaganych plików,
+6. działający komponent lokalny,
+7. działający komponent serwerowy,
+8. kompletne skrypty Bash,
+9. plik `crontab.example`,
+10. instalator i deinstalator wpisów cron,
+11. konfigurację `.env.example`,
+12. konfigurację YAML,
+13. migracje bazy,
+14. testy,
+15. instrukcję instalacji lokalnej,
+16. instrukcję instalacji serwera,
+17. instrukcję pierwszego uruchomienia,
+18. instrukcję instalacji crontaba,
+19. instrukcję diagnostyki,
+20. instrukcję odzyskiwania po awarii,
+21. przykładowe logi poprawnego wykonania,
+22. przykładowe dane snapshotu,
+23. przykładowe zapytania do API,
+24. opis kolejnej iteracji.
+
+Nie pozostawiaj kluczowych miejsc jako:
+
+```text
+TODO
+reszta analogicznie
+tu należy dodać
+implementacja pominięta
+```
+
+Kod ma być spójny, typowany, modularny i możliwy do uruchomienia.
+
+Jeżeli projekt nie mieści się w jednej odpowiedzi, wygeneruj go etapami, ale:
+
+* każda część ma zawierać kompletne pliki,
+* nie urywaj plików w połowie,
+* zachowaj spójność importów,
+* na początku każdej części pokaż, które pliki generujesz,
+* na końcu każdej części pokaż polecenia weryfikujące działanie.
+
+Preferowanym rezultatem jest wygenerowanie kompletnego projektu jako archiwum ZIP możliwego do pobrania.
+
+# 26. Kryterium ukończenia
+
+Lokalnie wykonanie:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+alembic upgrade head
+
+python -m smog_ai collect-all
+python -m smog_ai validate
+python -m smog_ai pipeline
+python -m smog_ai report
+python -m smog_ai healthcheck
+
+pytest
+
+sudo ./scripts/install_cron.sh
+crontab -l
+```
+
+ma skutkować:
+
+* utworzeniem lokalnej bazy,
+* pobraniem stacji i pomiarów,
+* zapisem danych pogodowych,
+* dopasowaniem stacji,
+* utworzeniem prognoz,
+* zapisaniem prognoz historycznych,
+* wygenerowaniem snapshotu,
+* publikacją danych,
+* działaniem outboxa,
+* poprawnym raportem,
+* poprawnym healthcheckiem,
+* zainstalowaniem harmonogramu cron,
+* przechodzącymi testami.
+
+Na serwerze system ma:
+
+* odebrać snapshot,
+* zweryfikować token i checksum,
+* zapisać publikację idempotentnie,
+* udostępnić dane dashboardowi,
+* zaprezentować aktualne i historyczne wyniki.
+
+Najpierw przedstaw zweryfikowane źródła danych i najważniejsze decyzje architektoniczne. Następnie wygeneruj kompletny projekt.
+
+# Zmiana środowiska lokalnego: Windows
+
+Komponent lokalny ma działać na komputerze z systemem Windows.
+
+Preferowane środowisko:
+
+* Windows 10 lub Windows 11,
+* Python 3.12,
+* PowerShell 7, a w razie potrzeby zgodność z Windows PowerShell 5.1,
+* lokalne środowisko `.venv` albo Conda,
+* SQLite,
+* Harmonogram zadań Windows — Windows Task Scheduler,
+* skrypty PowerShell,
+* bez Dockera, WSL, Airflow, Kafki, Celery i Kubernetes w pierwszej iteracji.
+
+Nie używaj `cron`, `anacron`, `flock` ani skryptów Bash w komponencie lokalnym.
+
+# Harmonogram lokalny za pomocą Windows Task Scheduler
+
+System lokalny ma być uruchamiany cyklicznie przez Harmonogram zadań Windows.
+
+Przygotuj zadania realizujące poniższy harmonogram.
+
+## Zadanie godzinowe
+
+Uruchamiane co godzinę, najlepiej kilka minut po pełnej godzinie, na przykład o 7 minut po każdej godzinie.
+
+Zadanie ma wykonywać:
+
+1. sprawdzenie konfiguracji,
+2. pobranie danych GIOŚ,
+3. pobranie danych IMGW,
+4. walidację i zapis nowych pomiarów,
+5. dopasowanie nowych stacji,
+6. weryfikację wcześniejszych prognoz,
+7. wykonanie nowych prognoz,
+8. przygotowanie snapshotu,
+9. publikację danych na serwer,
+10. ponowienie zaległych publikacji,
+11. zapis raportu wykonania.
+
+Przykładowe wywołanie:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\SmogAI\scripts\Run-Hourly.ps1"
+```
+
+Jeżeli dostępny jest PowerShell 7, preferuj:
+
+```powershell
+pwsh.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\SmogAI\scripts\Run-Hourly.ps1"
+```
+
+## Zadanie dzienne
+
+Uruchamiane codziennie, na przykład o 02:35.
+
+Ma wykonywać:
+
+* rozszerzony raport jakości danych,
+* wykrywanie i uzupełnianie brakujących przedziałów,
+* ponowne próby pobrania brakujących danych,
+* ponawianie niewysłanych publikacji,
+* porządkowanie katalogów tymczasowych,
+* kontrolę rozmiaru bazy,
+* kontrolę wolnego miejsca,
+* rotację i kompresję starych logów.
+
+## Zadanie tygodniowe
+
+Uruchamiane raz w tygodniu, na przykład w niedzielę o 03:20.
+
+Ma wykonywać:
+
+* zbudowanie aktualnego zbioru uczącego,
+* przygotowanie cech,
+* trening modeli,
+* walidację chronologiczną,
+* porównanie modeli,
+* zapis nowej wersji modelu,
+* aktywację modelu tylko wtedy, gdy spełnia kryteria jakości,
+* publikację informacji o nowym modelu.
+
+## Zadanie miesięczne
+
+Uruchamiane pierwszego dnia miesiąca, na przykład o 04:15.
+
+Ma wykonywać:
+
+* pełny raport jakości,
+* kopię bezpieczeństwa SQLite,
+* archiwizację danych,
+* kontrolę integralności bazy,
+* retencję kopii bezpieczeństwa,
+* usuwanie przeterminowanych logów,
+* raport wykorzystania przestrzeni dyskowej.
+
+# Wymagania dotyczące Harmonogramu zadań Windows
+
+## Pełne ścieżki
+
+Nie zakładaj, że zadanie posiada taki sam `PATH` jak interaktywna sesja użytkownika.
+
+Skrypty mają używać pełnych ścieżek do:
+
+* katalogu projektu,
+* interpretera Python,
+* środowiska `.venv`,
+* pliku konfiguracji,
+* pliku `.env`,
+* bazy danych,
+* modeli,
+* snapshotów,
+* logów.
+
+Przykład:
+
+```powershell
+$ProjectRoot = "C:\SmogAI"
+$PythonExe = "C:\SmogAI\.venv\Scripts\python.exe"
+
+& $PythonExe -m smog_ai pipeline
+```
+
+Nie polegaj na aktywowaniu środowiska poleceniem `Activate.ps1`. Wywołuj bezpośrednio interpreter:
+
+```text
+C:\SmogAI\.venv\Scripts\python.exe
+```
+
+## Katalog roboczy
+
+Zadanie musi jawnie ustawiać katalog roboczy:
+
+```powershell
+Set-Location -LiteralPath "C:\SmogAI"
+```
+
+W konfiguracji zadania ustaw również:
+
+```text
+Start in: C:\SmogAI
+```
+
+Nie używaj względnych ścieżek zależnych od bieżącego katalogu.
+
+## Blokada przed równoległym uruchomieniem
+
+To samo zadanie nie może działać równolegle w wielu instancjach.
+
+Na poziomie Harmonogramu zadań ustaw:
+
+```text
+If the task is already running:
+Do not start a new instance
+```
+
+Dodatkowo zaimplementuj blokadę aplikacyjną.
+
+Preferowane rozwiązania:
+
+* nazwany systemowy mutex Windows,
+* plik blokady zawierający PID, czas uruchomienia i identyfikator zadania,
+* mechanizm w lokalnej bazie danych z kontrolą wygasłych blokad.
+
+Blokada powinna zawierać:
+
+```text
+lock_name
+process_id
+host_name
+started_at
+heartbeat_at
+expires_at
+```
+
+Jeżeli blokada istnieje, ale proces już nie działa lub blokada wygasła, system powinien bezpiecznie ją przejąć.
+
+Nie opieraj blokady jedynie na sprawdzeniu istnienia zwykłego pliku bez weryfikacji procesu i czasu wygaśnięcia.
+
+## Kody zakończenia
+
+Każdy skrypt PowerShell oraz każde polecenie CLI musi zwracać poprawny kod zakończenia:
+
+```text
+0 — sukces
+1 — błąd ogólny
+2 — błąd konfiguracji
+3 — błąd bazy danych
+4 — częściowy sukces
+5 — zadanie pominięte z powodu blokady
+6 — błąd publikacji, przy zachowaniu danych lokalnych
+```
+
+Skrypty PowerShell mają propagować kod zwrócony przez Pythona:
+
+```powershell
+& $PythonExe -m smog_ai pipeline
+$ExitCode = $LASTEXITCODE
+exit $ExitCode
+```
+
+## Obsługa błędów PowerShell
+
+Każdy skrypt powinien rozpoczynać się od:
+
+```powershell
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+```
+
+Zastosuj:
+
+```powershell
+try {
+    # wykonanie
+}
+catch {
+    # zapis błędu
+    exit 1
+}
+finally {
+    # zwolnienie zasobów i blokad
+}
+```
+
+## Logowanie
+
+Każde zadanie ma zapisywać:
+
+* nazwę zadania,
+* identyfikator uruchomienia,
+* czas rozpoczęcia,
+* czas zakończenia,
+* czas wykonania,
+* nazwę komputera,
+* identyfikator procesu,
+* wykonane etapy,
+* liczbę pobranych rekordów,
+* liczbę nowych rekordów,
+* liczbę pominiętych duplikatów,
+* liczbę ostrzeżeń,
+* liczbę błędów,
+* wynik publikacji,
+* kod zakończenia.
+
+Logi zapisuj do osobnych katalogów:
+
+```text
+C:\ProgramData\SmogAI\logs\hourly
+C:\ProgramData\SmogAI\logs\daily
+C:\ProgramData\SmogAI\logs\training
+C:\ProgramData\SmogAI\logs\monthly
+```
+
+Opcjonalnie zapisuj najważniejsze zdarzenia również do Windows Event Log.
+
+Jeżeli aplikacja tworzy własne źródło zdarzeń, skrypt instalacyjny powinien utworzyć je z uprawnieniami administratora.
+
+## Konfiguracja i sekrety
+
+Konfigurację można przechowywać w:
+
+```text
+C:\ProgramData\SmogAI\config.yaml
+C:\ProgramData\SmogAI\smog-ai.env
+```
+
+Plik z sekretami nie może znaleźć się w repozytorium.
+
+Przykładowe ustawienia:
+
+```env
+SMOG_AI_ENV=production
+SMOG_AI_CONFIG=C:\ProgramData\SmogAI\config.yaml
+SMOG_AI_DATABASE_URL=sqlite:///C:/ProgramData/SmogAI/data/smog.db
+
+PUBLISH_API_URL=https://example.org/api/v1
+PUBLISH_API_TOKEN=...
+
+LOG_LEVEL=INFO
+DISPLAY_TIMEZONE=Europe/Warsaw
+```
+
+Podczas parsowania zmiennych i ścieżek uwzględnij:
+
+* ukośniki Windows,
+* spacje w ścieżkach,
+* kodowanie UTF-8,
+* polskie znaki,
+* brak interaktywnego profilu PowerShell.
+
+Nie zapisuj tokenu API w argumentach wiersza poleceń, ponieważ mogą być widoczne na liście procesów.
+
+## Konto uruchamiające zadanie
+
+Zadania powinny działać na dedykowanym lokalnym koncie, na przykład:
+
+```text
+.\SmogAIService
+```
+
+Konto powinno posiadać tylko niezbędne uprawnienia do:
+
+* katalogu aplikacji,
+* katalogu `C:\ProgramData\SmogAI`,
+* odczytu konfiguracji,
+* zapisu bazy i logów,
+* połączeń HTTPS do serwera oraz API źródłowych.
+
+Nie uruchamiaj zadań jako administrator, jeśli nie jest to konieczne.
+
+Skrypt instalacyjny ma jasno opisać, kiedy wymagane są uprawnienia administratora.
+
+## Ustawienia zadania
+
+Skonfiguruj zadania następująco:
+
+```text
+Run whether user is logged on or not
+Run with highest privileges — tylko jeśli rzeczywiście potrzebne
+Wake the computer to run this task — konfigurowalne
+Start the task only if the network connection is available — dla publikacji opcjonalne
+Stop the task if it runs longer than określony limit
+If the task fails, restart every 10 minutes
+Attempt to restart up to 3 times
+Run task as soon as possible after a scheduled start is missed
+Do not start a new instance
+```
+
+Nie uzależniaj całego lokalnego przetwarzania od dostępności serwera publikacyjnego.
+
+Brak Internetu albo niedostępność serwera nie może blokować:
+
+* zapisu pomiarów,
+* treningu,
+* generowania prognoz,
+* weryfikacji prognoz,
+* budowania lokalnego snapshotu.
+
+## Obsługa uśpienia i wyłączenia komputera
+
+Harmonogram zadań nie wykona zadania, gdy komputer jest wyłączony.
+
+Dla każdego zadania zaznacz:
+
+```text
+Run task as soon as possible after a scheduled start is missed
+```
+
+Dodatkowo pipeline po każdym uruchomieniu ma:
+
+* odczytać czas ostatniego udanego pobrania,
+* wykryć brakujące okresy,
+* próbować uzupełnić dane historyczne,
+* oznaczać niemożliwe do uzupełnienia luki,
+* nie zakładać, że poprzednie uruchomienie rzeczywiście się odbyło.
+
+Po wznowieniu komputera pipeline powinien nadrabiać zaległości etapami, aby nie przeciążyć zewnętrznych API.
+
+## Limity czasu
+
+Ustal konfigurowalne maksymalne czasy:
+
+```text
+zadanie godzinowe: 45 minut
+zadanie dzienne: 2 godziny
+trening tygodniowy: 8 godzin
+zadanie miesięczne: 4 godziny
+```
+
+Przekroczenie czasu powinno:
+
+* zostać zapisane w logu,
+* ustawić odpowiedni status uruchomienia,
+* nie pozostawiać aktywnej blokady bez terminu ważności,
+* nie uszkodzić bazy ani modelu.
+
+# Skrypty PowerShell
+
+Przygotuj kompletne skrypty:
+
+```text
+scripts\Run-Hourly.ps1
+scripts\Run-Daily.ps1
+scripts\Run-WeeklyTraining.ps1
+scripts\Run-Monthly.ps1
+scripts\Invoke-SmogAiTask.ps1
+scripts\Install-ScheduledTasks.ps1
+scripts\Remove-ScheduledTasks.ps1
+scripts\Test-SmogAiHealth.ps1
+scripts\Backup-SmogAi.ps1
+scripts\Repair-ScheduledTasks.ps1
+```
+
+## Wspólny skrypt wykonawczy
+
+`Invoke-SmogAiTask.ps1` powinien:
+
+* przyjmować nazwę zadania i polecenie CLI,
+* ustalać ścieżki,
+* sprawdzać interpreter Python,
+* sprawdzać konfigurację,
+* tworzyć wymagane katalogi,
+* pozyskiwać blokadę,
+* uruchamiać Pythona,
+* mierzyć czas,
+* zapisywać log,
+* propagować kod zakończenia,
+* zwalniać blokadę,
+* obsługiwać wyjątki.
+
+Przykład użycia:
+
+```powershell
+& "C:\SmogAI\scripts\Invoke-SmogAiTask.ps1" `
+    -TaskName "Hourly" `
+    -Command "pipeline"
+```
+
+# Instalator Harmonogramu zadań
+
+Przygotuj skrypt:
+
+```text
+scripts\Install-ScheduledTasks.ps1
+```
+
+Skrypt ma:
+
+* sprawdzić uprawnienia,
+* sprawdzić wersję PowerShell,
+* sprawdzić obecność Pythona i środowiska `.venv`,
+* zweryfikować konfigurację,
+* utworzyć wymagane katalogi,
+* nadać odpowiednie ACL,
+* utworzyć lub zaktualizować zadania,
+* nie tworzyć duplikatów,
+* wygenerować kopię istniejących zadań o tych samych nazwach,
+* wyświetlić podsumowanie,
+* opcjonalnie uruchomić testowe wykonanie.
+
+Użyj cmdletów:
+
+```powershell
+New-ScheduledTaskAction
+New-ScheduledTaskTrigger
+New-ScheduledTaskSettingsSet
+New-ScheduledTaskPrincipal
+Register-ScheduledTask
+```
+
+Zadania umieść w folderze:
+
+```text
+\SmogAI\
+```
+
+Nazwy:
+
+```text
+\SmogAI\Hourly Pipeline
+\SmogAI\Daily Maintenance
+\SmogAI\Weekly Training
+\SmogAI\Monthly Backup
+```
+
+Skrypt powinien działać idempotentnie. Ponowne uruchomienie ma aktualizować definicje, a nie tworzyć kolejne kopie zadań.
+
+# Deinstalator zadań
+
+Przygotuj:
+
+```text
+scripts\Remove-ScheduledTasks.ps1
+```
+
+Skrypt ma:
+
+* usuwać wyłącznie zadania znajdujące się w folderze `\SmogAI\`,
+* nie usuwać danych, bazy, modeli ani logów bez osobnego parametru,
+* pytać o potwierdzenie przed usunięciem danych,
+* zwracać poprawny kod zakończenia.
+
+# Eksport definicji zadań
+
+Dostarcz również przykładowe pliki XML:
+
+```text
+scheduled-tasks\SmogAI-Hourly.xml
+scheduled-tasks\SmogAI-Daily.xml
+scheduled-tasks\SmogAI-WeeklyTraining.xml
+scheduled-tasks\SmogAI-Monthly.xml
+```
+
+Głównym sposobem instalacji mają pozostać skrypty PowerShell, ale pliki XML powinny umożliwiać diagnostykę i ręczny import.
+
+# Kopie bezpieczeństwa SQLite na Windows
+
+Przygotuj bezpieczny backup bazy.
+
+Nie kopiuj bezpośrednio aktywnych plików SQLite bez uwzględnienia trybu WAL.
+
+Zastosuj jedną z metod:
+
+* SQLite Online Backup API,
+* polecenie `.backup`,
+* kontrolowany checkpoint WAL i bezpieczną kopię.
+
+Backup powinien zawierać:
+
+```text
+database_file
+created_at
+database_size
+sha256
+application_version
+schema_version
+backup_status
+```
+
+Archiwa zapisuj do:
+
+```text
+C:\ProgramData\SmogAI\backups
+```
+
+Przykładowa retencja:
+
+* 7 kopii dziennych,
+* 8 tygodniowych,
+* 12 miesięcznych.
+
+# Healthcheck na Windows
+
+Polecenie:
+
+```powershell
+C:\SmogAI\.venv\Scripts\python.exe -m smog_ai healthcheck
+```
+
+oraz skrypt:
+
+```powershell
+.\scripts\Test-SmogAiHealth.ps1
+```
+
+mają sprawdzać:
+
+* istnienie interpretera,
+* dostęp do konfiguracji,
+* dostęp do bazy,
+* integralność SQLite,
+* czas ostatniego udanego pobrania,
+* czas ostatniej prognozy,
+* czas ostatniej publikacji,
+* wielkość outboxa,
+* liczbę ostatnich błędów,
+* rozmiar bazy,
+* wolne miejsce na dysku,
+* aktywną wersję modelu,
+* połączenie z API źródłowymi,
+* dostępność serwera publikacyjnego,
+* stan zadań w Harmonogramie zadań,
+* wynik ich ostatniego uruchomienia,
+* czas następnego uruchomienia.
+
+Opcjonalny parametr:
+
+```powershell
+.\scripts\Test-SmogAiHealth.ps1 -AsJson
+```
+
+powinien zwracać wynik możliwy do automatycznego przetwarzania.
+
+# Struktura projektu dla Windows
+
+Zastosuj strukturę zbliżoną do:
+
+```text
+smog-ai\
+├── pyproject.toml
+├── requirements.txt
+├── README.md
+├── .env.example
+├── config.example.yaml
+├── alembic.ini
+├── scripts\
+│   ├── Invoke-SmogAiTask.ps1
+│   ├── Run-Hourly.ps1
+│   ├── Run-Daily.ps1
+│   ├── Run-WeeklyTraining.ps1
+│   ├── Run-Monthly.ps1
+│   ├── Install-ScheduledTasks.ps1
+│   ├── Remove-ScheduledTasks.ps1
+│   ├── Repair-ScheduledTasks.ps1
+│   ├── Test-SmogAiHealth.ps1
+│   └── Backup-SmogAi.ps1
+├── scheduled-tasks\
+│   ├── SmogAI-Hourly.xml
+│   ├── SmogAI-Daily.xml
+│   ├── SmogAI-WeeklyTraining.xml
+│   └── SmogAI-Monthly.xml
+├── smog_ai\
+│   ├── __init__.py
+│   ├── __main__.py
+│   ├── cli.py
+│   ├── config.py
+│   ├── locking.py
+│   ├── logging_config.py
+│   ├── database\
+│   ├── collectors\
+│   ├── processing\
+│   ├── features\
+│   ├── training\
+│   ├── prediction\
+│   ├── publishing\
+│   ├── reports\
+│   └── monitoring\
+├── server\
+├── migrations\
+├── tests\
+└── docs\
+```
+
+Dane uruchomieniowe nie powinny domyślnie znajdować się w katalogu repozytorium.
+
+Użyj:
+
+```text
+C:\ProgramData\SmogAI\data
+C:\ProgramData\SmogAI\logs
+C:\ProgramData\SmogAI\models
+C:\ProgramData\SmogAI\snapshots
+C:\ProgramData\SmogAI\backups
+C:\ProgramData\SmogAI\locks
+```
+
+# Instrukcja instalacji na Windows
+
+Dostarcz kompletną instrukcję PowerShell, przykładowo:
+
+```powershell
+Set-Location C:\SmogAI
+
+py -3.12 -m venv .venv
+
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+
+Copy-Item .env.example C:\ProgramData\SmogAI\smog-ai.env
+Copy-Item config.example.yaml C:\ProgramData\SmogAI\config.yaml
+
+.\.venv\Scripts\alembic.exe upgrade head
+
+.\.venv\Scripts\python.exe -m smog_ai collect-all
+.\.venv\Scripts\python.exe -m smog_ai pipeline
+.\.venv\Scripts\python.exe -m smog_ai healthcheck
+
+.\scripts\Install-ScheduledTasks.ps1
+```
+
+Uwzględnij konieczność uruchomienia wybranych poleceń jako administrator wyłącznie tam, gdzie jest to rzeczywiście wymagane.
+
+# Kryterium ukończenia wersji Windows
+
+Po wykonaniu:
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\alembic.exe upgrade head
+
+.\.venv\Scripts\python.exe -m smog_ai collect-all
+.\.venv\Scripts\python.exe -m smog_ai pipeline
+.\.venv\Scripts\python.exe -m smog_ai report
+.\.venv\Scripts\python.exe -m smog_ai healthcheck
+
+.\.venv\Scripts\pytest.exe
+
+.\scripts\Install-ScheduledTasks.ps1
+
+Get-ScheduledTask -TaskPath "\SmogAI\"
+Get-ScheduledTaskInfo -TaskName "Hourly Pipeline" -TaskPath "\SmogAI\"
+```
+
+system ma:
+
+* utworzyć lokalną bazę,
+* pobrać dane GIOŚ i IMGW,
+* zapisać pomiary bez duplikatów,
+* wykonać prognozy,
+* zweryfikować wcześniejsze prognozy,
+* przygotować snapshot,
+* opublikować dane lub zachować je w outboxie,
+* utworzyć cztery zadania Harmonogramu zadań,
+* poprawnie blokować równoległe uruchomienia,
+* uruchamiać się po pominiętym terminie,
+* prowadzić logi,
+* tworzyć kopie bezpieczeństwa,
+* przechodzić testy.
+
+W całym projekcie zamień rozwiązania charakterystyczne dla Linuxa:
+
+```text
+cron
+crontab
+anacron
+flock
+systemd
+journald
+bash
+chmod
+chown
+/opt/smog-ai
+/var/lib/smog-ai
+/var/log/smog-ai
+/etc/smog-ai
+```
+
+na ich odpowiedniki dla Windows:
+
+```text
+Windows Task Scheduler
+PowerShell
+Named Mutex lub bezpieczna blokada aplikacyjna
+Windows Event Log — opcjonalnie
+ACL za pomocą icacls lub PowerShell
+C:\SmogAI
+C:\ProgramData\SmogAI
+```
+
+Pozostałe wymagania dotyczące pobierania GIOŚ i IMGW, bazy danych, uczenia maszynowego, outboxa, serwera FastAPI oraz dashboardu pozostają bez zmian.

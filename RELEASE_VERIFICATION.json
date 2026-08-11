@@ -1,0 +1,125 @@
+{
+  "status": "passed",
+  "version": "1.7.0",
+  "python": "3.13.5",
+  "project_root": "GIOS_IMGW_Forecast_Suite_1.7.0_Hourly_MultiTarget_Pluggable",
+  "checks_total": 18,
+  "checks_passed": 18,
+  "checks_skipped": 0,
+  "checks_failed": 0,
+  "results": [
+    {
+      "name": "metadata and required files",
+      "status": "passed",
+      "duration_seconds": 0.0019210820009902818,
+      "details": "version=1.7.0, required_files=41, places=144"
+    },
+    {
+      "name": "configuration parsing",
+      "status": "passed",
+      "duration_seconds": 0.06083901199963293,
+      "details": "TOML=2, YAML=4, XML=4"
+    },
+    {
+      "name": "portable project root",
+      "status": "passed",
+      "duration_seconds": 0.0044449090000853175,
+      "details": "inspected=27 files"
+    },
+    {
+      "name": "automatic Python 3.12/3.13 bootstrap",
+      "status": "passed",
+      "duration_seconds": 0.000816892999864649,
+      "details": "supported=3.12,3.13; conda-first; temp-file-probe; winget-rescan; diagnostics=yes"
+    },
+    {
+      "name": "PowerShell UTF-8 BOM and CRLF",
+      "status": "passed",
+      "duration_seconds": 0.0007598579995828914,
+      "details": "UTF-8 BOM + CRLF=23 scripts"
+    },
+    {
+      "name": "Windows runtime regression guards",
+      "status": "passed",
+      "duration_seconds": 0.002492260000508395,
+      "details": "uvicorn wildcard=guarded; SQLite handles=closed; PDFs=2"
+    },
+    {
+      "name": "production database isolation for tests",
+      "status": "passed",
+      "duration_seconds": 1.0353469740002765,
+      "details": "sqlite:////tmp/smog-ai-test-db-guard-dnnh419z/data/isolated.db"
+    },
+    {
+      "name": "documentation contract",
+      "status": "passed",
+      "duration_seconds": 0.0038430860004154965,
+      "details": "checked=8 critical documents"
+    },
+    {
+      "name": "local-compute architecture invariant",
+      "status": "passed",
+      "duration_seconds": 0.0024255009993794374,
+      "details": "server_files=16, inference=precomputed-only"
+    },
+    {
+      "name": "hourly multi-target model platform",
+      "status": "passed",
+      "duration_seconds": 3.0059161329991184,
+      "details": "{'horizons': 48, 'targets': ['PM10', 'PM2.5', 'temperature_c', 'precipitation_mm'], 'providers': 8}"
+    },
+    {
+      "name": "spatial interpolation smoke",
+      "status": "passed",
+      "duration_seconds": 3.0687455649986077,
+      "details": "{'cells': 153, 'loo_mae': 7.085958151214623}"
+    },
+    {
+      "name": "DigitalOcean production app spec",
+      "status": "passed",
+      "duration_seconds": 0.7167723049988126,
+      "details": "status: ok\npath: .do/app.yaml\nservices:\n- api\n- dashboard\ncanonical_storage: DigitalOcean Spaces\ndatabase_components: 0\njobs: 0\nhttp_snapshot_upload: false\ndashboard_storage_credentials: false\nprediction_mode: locally_precomputed_surfaces\napp_platform_computation: read_and_present_only"
+    },
+    {
+      "name": "DigitalOcean development app spec",
+      "status": "passed",
+      "duration_seconds": 0.6146793580010126,
+      "details": "status: ok\npath: .do/app.dev.yaml\nservices:\n- api\n- dashboard\ncanonical_storage: DigitalOcean Spaces\ndatabase_components: 0\njobs: 0\nhttp_snapshot_upload: false\ndashboard_storage_credentials: false\nprediction_mode: locally_precomputed_surfaces\napp_platform_computation: read_and_present_only"
+    },
+    {
+      "name": "Python compilation",
+      "status": "passed",
+      "duration_seconds": 0.10903249900002265,
+      "details": "Python compilation succeeded"
+    },
+    {
+      "name": "CLI help",
+      "status": "passed",
+      "duration_seconds": 1.8789719010001136,
+      "details": "Usage: python -m smog_ai [OPTIONS] COMMAND [ARGS]...                           \n                                                                                \n GIOŚ/IMGW Forecast Suite — lokalny pipeline i MLOps.                           \n                                                                                \n╭─ Options ────────────────────────────────────────────────────────────────────╮\n│ --install-completion          Install completion for the current shell.      │\n│ --show-completion             Show completion for the current shell, to copy │\n│                               it or customize the installation.              │\n│ --help                        Show this message and exit.                    │\n╰──────────────────────────────────────────────────────────────────────────────╯\n╭─ Commands ───────────────────────────────────────────────────────────────────╮\n│ init-db                                                                      │\n│ collect-gios                                                                 │\n│ probe-gios                 Check the live GIOŚ JSON-LD contract without      │\n│                            changing the database.                            │\n│ collect-imgw                                                                 │\n│ backfill-imgw-archive      Import official monthly terminowe/SYNOP archives  │\n│                            idempotently.                                     │\n│ collect-all                                                                  │\n│ validate                                                                     │\n│ match-stations                                                               │\n│ build-features                                                               │\n│ list-model-methods         List built-in and externally discovered model     │\n│                            providers.                                        │\n│ publish-documentation                                                        │\n│ build-hourly-features                                                        │\n│ train-hourly                                                                 │\n│ predict-hourly                                                               │\n│ hourly-readiness                                                             │\n│ train                                                                        │\n│ predict                                                                      │\n│ verify                                                                       │\n│ build-spatial-surfaces     Locally interpolate station forecasts over Poland │\n│                            and publish ready map artifacts.                  │\n│ validate-spatial-surfaces                                                    │\n│ publish-spatial-surfaces   Idempotent alias: build locally and publish the   │\n│                            resulting immutable surfaces.                     │\n│ build-snapshot                                                               │\n│ publish                                                                      │\n│ retry-publications                                                           │\n│ backfill                                                                     │\n│ report                                                                       │\n│ pipeline                                                                     │\n│ healthcheck                                                                  │\n│ storage-init                                                                 │\n│ storage-health                                                               │\n│ upload-operational-data                                                      │\n│ prepare-training-data                                                        │\n│ first-run                  Perform API -> Spaces -> local ML -> ready        │\n│                            artifacts exactly once.                           │\n│ backup                                                                       │\n│ daily-maintenance                                                            │\n│ weekly-maintenance                                                           │\n│ monthly-maintenance                                                          │\n╰──────────────────────────────────────────────────────────────────────────────╯"
+    },
+    {
+      "name": "FastAPI seeded spatial smoke",
+      "status": "passed",
+      "duration_seconds": 1.679057159999502,
+      "details": "{'health': 'ok', 'query_value': 39.5}"
+    },
+    {
+      "name": "pytest",
+      "status": "passed",
+      "duration_seconds": 10.352571288000036,
+      "details": "........................................................................ [ 69%]\n...............................                                          [100%]\n103 passed in 7.17s"
+    },
+    {
+      "name": "wheel build/import",
+      "status": "passed",
+      "duration_seconds": 5.443535111000529,
+      "details": "gios_imgw_forecast_suite-1.7.0-py3-none-any.whl, sha256=38632750df5658de8b573354211fb39d485b2c9afbb886c038ce913a49e2d360, import=1.7.0 IDWInterpolator ServerSettings"
+    }
+  ],
+  "verified_at_utc": "2026-08-03T15:26:22.067931+00:00",
+  "release_wheel": {
+    "path": "dist/gios_imgw_forecast_suite-1.7.0-py3-none-any.whl",
+    "sha256": "a1d89160a5bb12df1a65eaff0bdd7c1dd2a91a13c6cd268c0901fe50c42aa727"
+  }
+}

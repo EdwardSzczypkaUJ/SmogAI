@@ -1,0 +1,1 @@
+"""FastAPI publication API."""

@@ -1,0 +1,54 @@
+{
+  "product": "GIOŚ/IMGW Forecast Suite",
+  "version": "1.7.0",
+  "edition": "Hourly Multi-Target Forecasting & Pluggable Model Platform",
+  "built_at_utc": "2026-08-03T15:26:22.067931+00:00",
+  "author": {
+    "name": "Edward Szczypka",
+    "email": "edward@szczypka.guru"
+  },
+  "python_runtime": {
+    "supported": ">=3.12,<3.14",
+    "accepted_lines": [
+      "3.12",
+      "3.13"
+    ],
+    "automatic_detection": true,
+    "explicit_interpreter_override": true
+  },
+  "architecture": {
+    "local_collection": true,
+    "local_training": true,
+    "local_model_prediction": true,
+    "local_spatial_interpolation": true,
+    "hourly_horizons": "1..48",
+    "targets": [
+      "PM10",
+      "PM2.5",
+      "temperature_c",
+      "precipitation_mm"
+    ],
+    "pluggable_model_registry": true,
+    "canonical_exchange_store": "DigitalOcean Spaces via generic ObjectStore Bridge",
+    "cloud_runtime": "DigitalOcean App Platform: read-only FastAPI + public Streamlit",
+    "app_platform_model_inference": false,
+    "app_platform_spatial_interpolation": false,
+    "documentation_on_platform": true
+  },
+  "verification_status": "passed full offline release gate",
+  "limitations": [
+    "Live DigitalOcean deployment requires customer credentials.",
+    "A meaningful scientific evaluation requires sufficient multi-season history.",
+    "Native Windows Task Scheduler and PowerShell execution require final customer pilot."
+  ],
+  "verification": {
+    "checks_total": 18,
+    "checks_passed": 18,
+    "checks_failed": 0,
+    "checks_skipped": 0,
+    "pytest": "103 passed",
+    "python": "3.13.5",
+    "wheel_sha256": "a1d89160a5bb12df1a65eaff0bdd7c1dd2a91a13c6cd268c0901fe50c42aa727",
+    "pdfs_render_verified": 2
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "release": "HF21 ExactPoint StorageBridge PCHIP",
+  "verified_at": "2026-08-11",
+  "status": "passed",
+  "release_gate": {
+    "checks_passed": 18,
+    "checks_failed": 0
+  },
+  "pytest": {
+    "passed": 247,
+    "failed": 0,
+    "warnings": 22
+  },
+  "contracts": {
+    "storage_bridge": "read_write_local_or_s3_spaces",
+    "server_ml_prediction": "forbidden",
+    "server_exact_point": "quality_weighted_idw_epsg2180",
+    "minute_order": "spatial_then_pchip"
+  },
+  "real_data_actions": {
+    "downloaded_again": false,
+    "training_started": false,
+    "database_backup_created": false
+  }
+}

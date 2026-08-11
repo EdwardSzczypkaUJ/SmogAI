@@ -1,0 +1,416 @@
+{
+  "request_id": "example-request-hourly-katowice",
+  "trace_id": "example-trace-hourly-katowice",
+  "question": "Jutro o 10:00 jadę do Katowic. Jakie będą PM10, PM2.5, temperatura i opad?",
+  "intent": {
+    "location": "Katowice",
+    "target_time": "2026-08-04T08:00:00Z",
+    "pollutants": [
+      "PM10",
+      "PM2.5"
+    ],
+    "language": "pl",
+    "requested_view": "forecast",
+    "time_was_explicit": true,
+    "time_precision": "hour",
+    "confidence": 0.95,
+    "assumptions": []
+  },
+  "interpretation": {
+    "intent": {
+      "location": "Katowice",
+      "target_time": "2026-08-04T08:00:00Z",
+      "pollutants": [
+        "PM10",
+        "PM2.5"
+      ],
+      "language": "pl",
+      "requested_view": "forecast",
+      "time_was_explicit": true,
+      "time_precision": "hour",
+      "confidence": 0.95,
+      "assumptions": []
+    },
+    "provider": "rule_based",
+    "model": null,
+    "latency_ms": 1.2,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "fallback_used": false,
+    "raw_response": null
+  },
+  "place": {
+    "name": "Katowice",
+    "latitude": 50.2649,
+    "longitude": 19.0238,
+    "match_score": 1.0,
+    "source": "curated_offline_gazetteer",
+    "matched_text": "Katowice"
+  },
+  "station": {
+    "station_id": 11,
+    "station_name": "Katowice, ul. Kossutha",
+    "city_name": "Katowice",
+    "latitude": 50.2649,
+    "longitude": 19.0238,
+    "match_score": 0.86,
+    "distance_km": 3.8
+  },
+  "forecasts": [
+    {
+      "parameter": "PM10",
+      "predicted_value": 31.4,
+      "actual_value": null,
+      "target_time": "2026-08-04T08:00:00Z",
+      "forecast_origin_time": "2026-08-03T10:00:00Z",
+      "requested_target_time": "2026-08-04T08:00:00Z",
+      "horizon_hours": 22,
+      "exact_time_match": true,
+      "temporal_method": "direct_hourly_surface",
+      "signed_error": null,
+      "absolute_error": null,
+      "model_version": "2026.08.03-hourly-PM10-example",
+      "time_distance_minutes": 0.0,
+      "prediction_source": "locally_precomputed_interpolated_surface",
+      "confidence": 0.84,
+      "nearest_station_distance_km": 3.8,
+      "stations_used": 8,
+      "quality_flag": "ok",
+      "surface_id": "20260803T100000Z-PM10-h22-example",
+      "cell_id": "r047-c079",
+      "cell_latitude": 50.2516,
+      "cell_longitude": 19.0182,
+      "interpolation_point_distance_km": 1.53,
+      "unit": "µg/m³",
+      "category": null,
+      "station_predicted_value": 32.6
+    },
+    {
+      "parameter": "PM2.5",
+      "predicted_value": 18.9,
+      "actual_value": null,
+      "target_time": "2026-08-04T08:00:00Z",
+      "forecast_origin_time": "2026-08-03T10:00:00Z",
+      "requested_target_time": "2026-08-04T08:00:00Z",
+      "horizon_hours": 22,
+      "exact_time_match": true,
+      "temporal_method": "direct_hourly_surface",
+      "signed_error": null,
+      "absolute_error": null,
+      "model_version": "2026.08.03-hourly-PM25-example",
+      "time_distance_minutes": 0.0,
+      "prediction_source": "locally_precomputed_interpolated_surface",
+      "confidence": 0.82,
+      "nearest_station_distance_km": 3.8,
+      "stations_used": 8,
+      "quality_flag": "ok",
+      "surface_id": "20260803T100000Z-PM25-h22-example",
+      "cell_id": "r047-c079",
+      "cell_latitude": 50.2516,
+      "cell_longitude": 19.0182,
+      "interpolation_point_distance_km": 1.53,
+      "unit": "µg/m³",
+      "category": null,
+      "station_predicted_value": 20.099999999999998
+    },
+    {
+      "parameter": "temperature_c",
+      "predicted_value": 16.8,
+      "actual_value": null,
+      "target_time": "2026-08-04T08:00:00Z",
+      "forecast_origin_time": "2026-08-03T10:00:00Z",
+      "requested_target_time": "2026-08-04T08:00:00Z",
+      "horizon_hours": 22,
+      "exact_time_match": true,
+      "temporal_method": "direct_hourly_surface",
+      "signed_error": null,
+      "absolute_error": null,
+      "model_version": "2026.08.03-hourly-temperature_c-example",
+      "time_distance_minutes": 0.0,
+      "prediction_source": "locally_precomputed_interpolated_surface",
+      "confidence": 0.88,
+      "nearest_station_distance_km": 3.8,
+      "stations_used": 8,
+      "quality_flag": "ok",
+      "surface_id": "20260803T100000Z-temperature_c-h22-example",
+      "cell_id": "r047-c079",
+      "cell_latitude": 50.2516,
+      "cell_longitude": 19.0182,
+      "interpolation_point_distance_km": 1.53,
+      "unit": "°C",
+      "category": null,
+      "station_predicted_value": 16.8
+    },
+    {
+      "parameter": "precipitation_probability",
+      "predicted_value": 0.72,
+      "actual_value": null,
+      "target_time": "2026-08-04T08:00:00Z",
+      "forecast_origin_time": "2026-08-03T10:00:00Z",
+      "requested_target_time": "2026-08-04T08:00:00Z",
+      "horizon_hours": 22,
+      "exact_time_match": true,
+      "temporal_method": "direct_hourly_surface",
+      "signed_error": null,
+      "absolute_error": null,
+      "model_version": "2026.08.03-hourly-precipitation_probability-example",
+      "time_distance_minutes": 0.0,
+      "prediction_source": "locally_precomputed_interpolated_surface",
+      "confidence": 0.76,
+      "nearest_station_distance_km": 3.8,
+      "stations_used": 8,
+      "quality_flag": "ok",
+      "surface_id": "20260803T100000Z-precipitation_probability-h22-example",
+      "cell_id": "r047-c079",
+      "cell_latitude": 50.2516,
+      "cell_longitude": 19.0182,
+      "interpolation_point_distance_km": 1.53,
+      "unit": "%",
+      "category": null,
+      "station_predicted_value": 0.72
+    },
+    {
+      "parameter": "precipitation_mm",
+      "predicted_value": 2.0,
+      "actual_value": null,
+      "target_time": "2026-08-04T08:00:00Z",
+      "forecast_origin_time": "2026-08-03T10:00:00Z",
+      "requested_target_time": "2026-08-04T08:00:00Z",
+      "horizon_hours": 22,
+      "exact_time_match": true,
+      "temporal_method": "direct_hourly_surface",
+      "signed_error": null,
+      "absolute_error": null,
+      "model_version": "2026.08.03-hourly-precipitation_mm-example",
+      "time_distance_minutes": 0.0,
+      "prediction_source": "locally_precomputed_interpolated_surface",
+      "confidence": 0.74,
+      "nearest_station_distance_km": 3.8,
+      "stations_used": 8,
+      "quality_flag": "ok",
+      "surface_id": "20260803T100000Z-precipitation_mm-h22-example",
+      "cell_id": "r047-c079",
+      "cell_latitude": 50.2516,
+      "cell_longitude": 19.0182,
+      "interpolation_point_distance_km": 1.53,
+      "unit": "mm/6h",
+      "category": null,
+      "station_predicted_value": 2.0
+    }
+  ],
+  "current_measurements": {
+    "PM10": {
+      "value": 28.0,
+      "measurement_time": "2026-08-03T10:00:00Z"
+    },
+    "PM2.5": {
+      "value": 15.4,
+      "measurement_time": "2026-08-03T10:00:00Z"
+    }
+  },
+  "weather": {
+    "temperature_c": 21.1,
+    "precipitation_mm": 0.0,
+    "precipitation_accumulation_period_hours": 6,
+    "measurement_time": "2026-08-03T10:00:00Z"
+  },
+  "summary": "Katowice, dokładny termin 04.08.2026 10:00: PM10 31,4 µg/m³, PM2.5 18,9 µg/m³, temperatura 16,8 °C, prawdopodobieństwo opadu 72%, oczekiwany opad 2,0 mm/6h.",
+  "warnings": [],
+  "map_points": [
+    {
+      "station_id": 11,
+      "station_name": "Katowice, ul. Kossutha",
+      "city_name": "Katowice",
+      "latitude": 50.2649,
+      "longitude": 19.0238,
+      "value": 32.6,
+      "parameter": "PM10",
+      "target_time": "2026-08-04T08:00:00Z",
+      "selected": true
+    }
+  ],
+  "timeline": [
+    {
+      "parameter": "PM10",
+      "horizon_hours": 22,
+      "target_time": "2026-08-04T08:00:00Z",
+      "value": 31.4,
+      "confidence": 0.84,
+      "unit": "µg/m³"
+    }
+  ],
+  "surface_options": [
+    {
+      "schema_version": "1.0",
+      "surface_id": "20260803T100000Z-PM10-h22-example",
+      "surface_set_id": "20260803T100500Z-hourly-example",
+      "parameter": "PM10",
+      "horizon_hours": 22,
+      "origin_time": "2026-08-03T10:00:00Z",
+      "target_time": "2026-08-04T08:00:00Z",
+      "generated_at": "2026-08-03T10:05:00Z",
+      "model_versions": [
+        "2026.08.03-hourly-PM10-example"
+      ],
+      "object_key": "maps/runs/surface-set=20260803T100500Z-hourly-example/parameter=PM10/horizon=22/surface.json.gz",
+      "checksum": "bf2e1f950b9fadd3c056bac3e3f1b22b110b92fb105d1846017439823821bac9",
+      "size": 2048,
+      "grid_cells": 153,
+      "station_count": 288,
+      "metrics": {
+        "algorithm": "idw",
+        "loo_mae": 2.4
+      },
+      "metadata": {
+        "grid_resolution_km": 8.0,
+        "precipitation_accumulation_period_hours": null
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "surface_id": "20260803T100000Z-PM25-h22-example",
+      "surface_set_id": "20260803T100500Z-hourly-example",
+      "parameter": "PM2.5",
+      "horizon_hours": 22,
+      "origin_time": "2026-08-03T10:00:00Z",
+      "target_time": "2026-08-04T08:00:00Z",
+      "generated_at": "2026-08-03T10:05:00Z",
+      "model_versions": [
+        "2026.08.03-hourly-PM25-example"
+      ],
+      "object_key": "maps/runs/surface-set=20260803T100500Z-hourly-example/parameter=PM25/horizon=22/surface.json.gz",
+      "checksum": "073420a76b52837722dfb4db1f3d34e19a64f427c9eb70b840f85c6bf21480a9",
+      "size": 2048,
+      "grid_cells": 153,
+      "station_count": 288,
+      "metrics": {
+        "algorithm": "idw",
+        "loo_mae": 2.4
+      },
+      "metadata": {
+        "grid_resolution_km": 8.0,
+        "precipitation_accumulation_period_hours": null
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "surface_id": "20260803T100000Z-temperature_c-h22-example",
+      "surface_set_id": "20260803T100500Z-hourly-example",
+      "parameter": "temperature_c",
+      "horizon_hours": 22,
+      "origin_time": "2026-08-03T10:00:00Z",
+      "target_time": "2026-08-04T08:00:00Z",
+      "generated_at": "2026-08-03T10:05:00Z",
+      "model_versions": [
+        "2026.08.03-hourly-temperature_c-example"
+      ],
+      "object_key": "maps/runs/surface-set=20260803T100500Z-hourly-example/parameter=temperature_c/horizon=22/surface.json.gz",
+      "checksum": "6a8cdcac6fd163dc18f8e459672bd7d05a33b20516ac47593dd560f0460a0965",
+      "size": 2048,
+      "grid_cells": 153,
+      "station_count": 288,
+      "metrics": {
+        "algorithm": "idw",
+        "loo_mae": 1.1
+      },
+      "metadata": {
+        "grid_resolution_km": 8.0,
+        "precipitation_accumulation_period_hours": null
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "surface_id": "20260803T100000Z-precipitation_probability-h22-example",
+      "surface_set_id": "20260803T100500Z-hourly-example",
+      "parameter": "precipitation_probability",
+      "horizon_hours": 22,
+      "origin_time": "2026-08-03T10:00:00Z",
+      "target_time": "2026-08-04T08:00:00Z",
+      "generated_at": "2026-08-03T10:05:00Z",
+      "model_versions": [
+        "2026.08.03-hourly-precipitation_probability-example"
+      ],
+      "object_key": "maps/runs/surface-set=20260803T100500Z-hourly-example/parameter=precipitation_probability/horizon=22/surface.json.gz",
+      "checksum": "8ebef504b8b5cdd421ff70c503855f4cfcf59cc013b116b42fbb5fa6dadb7ba8",
+      "size": 2048,
+      "grid_cells": 153,
+      "station_count": 288,
+      "metrics": {
+        "algorithm": "idw",
+        "loo_mae": 1.1
+      },
+      "metadata": {
+        "grid_resolution_km": 8.0,
+        "precipitation_accumulation_period_hours": null
+      }
+    },
+    {
+      "schema_version": "1.0",
+      "surface_id": "20260803T100000Z-precipitation_mm-h22-example",
+      "surface_set_id": "20260803T100500Z-hourly-example",
+      "parameter": "precipitation_mm",
+      "horizon_hours": 22,
+      "origin_time": "2026-08-03T10:00:00Z",
+      "target_time": "2026-08-04T08:00:00Z",
+      "generated_at": "2026-08-03T10:05:00Z",
+      "model_versions": [
+        "2026.08.03-hourly-precipitation_mm-example"
+      ],
+      "object_key": "maps/runs/surface-set=20260803T100500Z-hourly-example/parameter=precipitation_mm/horizon=22/surface.json.gz",
+      "checksum": "9e9dd88c0f90f9956c940a947034f4ff359f24d1aaf93b316768378f913f89b5",
+      "size": 2048,
+      "grid_cells": 153,
+      "station_count": 288,
+      "metrics": {
+        "algorithm": "idw",
+        "loo_mae": 1.1
+      },
+      "metadata": {
+        "grid_resolution_km": 8.0,
+        "precipitation_accumulation_period_hours": 6
+      }
+    }
+  ],
+  "selected_surface": {
+    "schema_version": "1.0",
+    "surface_id": "20260803T100000Z-PM10-h22-example",
+    "surface_set_id": "20260803T100500Z-hourly-example",
+    "parameter": "PM10",
+    "horizon_hours": 22,
+    "origin_time": "2026-08-03T10:00:00Z",
+    "target_time": "2026-08-04T08:00:00Z",
+    "generated_at": "2026-08-03T10:05:00Z",
+    "model_versions": [
+      "2026.08.03-hourly-PM10-example"
+    ],
+    "object_key": "maps/runs/surface-set=20260803T100500Z-hourly-example/parameter=PM10/horizon=22/surface.json.gz",
+    "checksum": "bf2e1f950b9fadd3c056bac3e3f1b22b110b92fb105d1846017439823821bac9",
+    "size": 2048,
+    "grid_cells": 153,
+    "station_count": 288,
+    "metrics": {
+      "algorithm": "idw",
+      "loo_mae": 2.4
+    },
+    "metadata": {
+      "grid_resolution_km": 8.0,
+      "precipitation_accumulation_period_hours": null
+    }
+  },
+  "time_selection": {
+    "mode": "exact_target",
+    "time_was_explicit": true,
+    "time_precision": "hour",
+    "requested_target_time": "2026-08-04T08:00:00Z",
+    "exact_package_required": true,
+    "all_selected_values_exact": true,
+    "selected_target_times": [
+      "2026-08-04T08:00:00Z"
+    ],
+    "silent_nearest_selection_allowed": false
+  },
+  "snapshot_metadata": {
+    "publication_id": "WINDOWS-TRAINER-20260803T100500Z-example",
+    "schema_version": "1.1"
+  }
+}

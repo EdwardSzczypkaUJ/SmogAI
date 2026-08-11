@@ -1,0 +1,60 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[polish]{babel}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage[a4paper,margin=2.3cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{listings}
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue}
+\lstset{basicstyle=\ttfamily\small,breaklines=true,frame=single}
+\title{Zunifikowany katalog parametrów i transport Unicode w Smog AI}
+\author{Edward Szczypka}
+\date{\today}
+\begin{document}
+\maketitle
+\section{Rozdzielenie dziedzin}
+Niech $\mathcal A$ oznacza zbiór parametrów jakości powietrza GIOŚ, a
+$\mathcal W$ zbiór zmiennych meteorologicznych IMGW. W systemie:
+\[
+ \mathcal A=\{\mathrm{PM10},\mathrm{PM2.5},\mathrm{NO2},\ldots\},
+\]
+\[
+ \mathcal W=\{T,R,H,P,V,\Theta\},
+\]
+gdzie $T$ oznacza temperaturę, $R$ opad, $H$ wilgotność, $P$ ciśnienie,
+$V$ prędkość wiatru, a $\Theta$ jego kierunek. Temperatura nie należy do
+rejestru zanieczyszczeń, ale może być celem modelu godzinowego oraz warstwą
+przestrzenną.
+
+\section{Zunifikowany widok}
+Polecenie katalogu zwraca oddzielne sekcje \texttt{parameters} i
+\texttt{weather\_parameters}, a także listy \texttt{hourly\_targets} oraz
+\texttt{spatial\_targets}. Dzięki temu zachowana jest poprawna semantyka
+źródła, a użytkownik otrzymuje jeden widok operacyjny.
+
+\section{Transport Unicode}
+Dla strony kodowej $E$ tekst $s$ jest bezpieczny wtedy i tylko wtedy, gdy
+\[
+ s\in\operatorname{Dom}(\operatorname{encode}_E).
+\]
+Znaki jednostek, takie jak \texttt{m\textsuperscript{3}} oraz stopień, nie
+należą do dziedziny części starszych stron kodowych. CLI najpierw próbuje
+zapisu Unicode, a przy \texttt{UnicodeEncodeError} serializuje JSON z
+ucieczkami \texttt{\\uXXXX}. Jest to transformacja bezstratna:
+\[
+ \operatorname{decodeJSON}(\operatorname{escapeJSON}(s))=s.
+\]
+Skrypt PowerShell dodatkowo ustawia UTF-8 dla konsoli i procesu Pythona.
+
+\section{Uruchomienie}
+\begin{lstlisting}[language=bash]
+.\scripts\Show-ParameterCatalog.ps1 `
+  -ProjectRoot $ProjectRoot `
+  -RuntimeRoot $RuntimeRoot
+\end{lstlisting}
+\end{document}

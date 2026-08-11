@@ -1,0 +1,161 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[polish]{babel}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage[a4paper,margin=2.25cm]{geometry}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{booktabs,longtable,tabularx}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{enumitem}
+
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue}
+\lstset{basicstyle=\ttfamily\small,breaklines=true,frame=single,columns=fullflexible}
+
+\title{RangeAwareBackfillBridge\\
+Uzupełnianie wyłącznie brakujących zakresów danych}
+\author{Edward Szczypka\\\href{mailto:edward@szczypka.guru}{edward@szczypka.guru}}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Cel}
+
+Niech $R=[a,b)$ będzie żądanym przedziałem czasu, a $D_p\subseteq R$
+zbiorem slotów parametru $p$ obecnych w SQLite. Plan pobierania powinien być
+oparty na różnicy
+\[
+  M_p = R_p \setminus D_p,
+\]
+a nie wyłącznie na znaczniku ukończenia w pliku \texttt{state.json}.
+
+SQLite jest źródłem prawdy dla kompletności. Cache lokalny, DigitalOcean
+Spaces i stan wznowienia są optymalizacjami transportu.
+
+\section{Kadencja}
+
+Dla większości parametrów oczekiwane sloty są godzinowe:
+\[
+  R_p=\{a,a+1\mathrm{h},\ldots\}.
+\]
+
+Dla sumy opadu \texttt{WO6G}:
+\[
+  R_{\mathrm{rain}}
+  =\{t_0,t_0+6\mathrm{h},t_0+12\mathrm{h},\ldots\},
+\]
+gdzie faza $t_0\bmod 6\mathrm{h}$ jest estymowana z istniejących pomiarów.
+Brak pięciu rekordów pomiędzy dwiema sumami sześciogodzinnymi nie jest luką.
+
+\section{Próg kompletności sieci}
+
+Dla liczby różnych stacji $n_p(t)$ oraz progu $m_p$ slot jest obecny wtedy i
+tylko wtedy, gdy
+\[
+  n_p(t)\ge m_p.
+\]
+Pakiet audytu może przechowywać oddzielne progi dla AIR i pogody. Program
+odtwarza je z metadanych, lecz przed każdą akcją ponownie oblicza $n_p(t)$ w
+aktualnej SQLite. Brak wzrostu pokrycia po dwóch próbach jest oznaczany jako
+\texttt{skipped\_no\_progress}.
+
+\section{Warstwa Bridge}
+
+\begin{lstlisting}
+BackfillProvider
+|-- GiosLiveBackfillProvider
+|-- GiosHistoricalBackfillProvider(prepared)
+|-- GiosHistoricalBackfillProvider(api)
+|-- ImgwLiveBackfillProvider
+`-- ImgwArchiveRangeBackfillProvider
+\end{lstlisting}
+
+Cache historyczny zachowuje warianty:
+\[
+ \{\texttt{local},\texttt{object\_store},\texttt{hybrid}\}.
+\]
+
+\section{Granularność źródeł}
+
+Dla rocznego ZIP-a minimalna jednostka pobrania jest większa od pojedynczej
+luki. Optymalizacja ma wtedy dwie warstwy:
+\begin{enumerate}[nosep]
+  \item nie pobierać ponownie pliku o zgodnej sumie kontrolnej;
+  \item po parsowaniu zachować wyłącznie rekordy $t\in M_p$.
+\end{enumerate}
+
+Dla API rocznego strony są cache'owane, a filtr przed insertem ma postać
+\[
+  \mathbf{1}_{M_p}(t)=
+  \begin{cases}
+    1,& t\in M_p,\\
+    0,& t\notin M_p.
+  \end{cases}
+\]
+
+\section{Merge danych pogodowych}
+
+Dla rekordu konfliktowego nie stosujemy bezwarunkowego \texttt{DO NOTHING}.
+Dla każdej kolumny $x$:
+\[
+ x_{\mathrm{after}}=
+ \begin{cases}
+   x_{\mathrm{incoming}},&x_{\mathrm{existing}}=\mathrm{NULL},\\
+   x_{\mathrm{existing}},&\text{w przeciwnym razie}.
+ \end{cases}
+\]
+
+Pozwala to dopisać np. opad z archiwum bez nadpisywania znanej temperatury.
+
+\section{Ochrona przed pętlą bez postępu}
+
+Niech $m_k$ będzie liczbą brakujących slotów przed próbą $k$. Próba daje
+postęp wtedy i tylko wtedy, gdy
+\[
+  m_{k+1}<m_k.
+\]
+
+Po dwóch kolejnych próbach z $m_{k+1}=m_k$ akcja jest oznaczana jako
+\texttt{skipped\_no\_progress}. Luka pozostaje jawna, lecz źródło nie jest
+odpytywane w nieskończoność.
+
+\section{Progress i ETA}
+
+Etapy mają wagi:
+\[
+  w_{\mathrm{audit}}=0.05,\quad
+  w_{\mathrm{plan}}=0.05,\quad
+  w_{\mathrm{execute}}=0.85,\quad
+  w_{\mathrm{verify}}=0.05.
+\]
+
+Postęp całkowity:
+\[
+ P=\sum_s w_s P_s.
+\]
+
+Stan jest zapisywany atomowo do pliku JSON i odświeżany heartbeat'em także
+w czasie blokującego pobierania lub parsowania.
+
+\section{Uruchomienie}
+
+\begin{lstlisting}
+.\scripts\Run-MissingRangeBackfill.ps1 `
+  -ProjectRoot $ProjectRoot `
+  -RuntimeRoot $RuntimeRoot `
+  -AuditPackage "C:\data-ranges.zip" `
+  -CacheMode local `
+  -DryRun
+
+.\scripts\Run-MissingRangeBackfill.ps1 `
+  -ProjectRoot $ProjectRoot `
+  -RuntimeRoot $RuntimeRoot `
+  -AuditPackage "C:\data-ranges.zip" `
+  -CacheMode local
+\end{lstlisting}
+
+\end{document}

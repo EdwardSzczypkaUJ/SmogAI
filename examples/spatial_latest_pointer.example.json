@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0",
+  "surface_set_id": "20260801T210912Z-example",
+  "manifest_key": "maps/runs/surface-set=20260801T210912Z-example/manifest.json",
+  "generated_at": "2026-08-01T21:09:12Z",
+  "manifest_checksum": "example-manifest-checksum",
+  "algorithm": "idw",
+  "grid_resolution_km": 8.0,
+  "parameters": [
+    "PM10",
+    "PM2.5"
+  ],
+  "horizons_hours": [
+    24
+  ]
+}

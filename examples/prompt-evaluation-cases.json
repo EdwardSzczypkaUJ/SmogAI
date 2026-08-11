@@ -1,0 +1,35 @@
+{
+  "schema_version": "1.0",
+  "cases": [
+    {
+      "id": "katowice-all-targets-tomorrow-noon",
+      "text": "Jutro o 12:00 jadę do Katowic. Jakie będą PM10, PM2.5, temperatura i opady?",
+      "expected": {
+        "parameters": ["PM10", "PM2.5", "temperature_c", "precipitation_mm"],
+        "place_contains": "Katowice",
+        "require_exact_time": true,
+        "minimum_forecasts": 4
+      }
+    },
+    {
+      "id": "krakow-pm25-evening",
+      "text": "Jakie będzie PM2.5 w Krakowie jutro o 18:00?",
+      "expected": {
+        "parameters": ["PM2.5"],
+        "place_contains": "Kraków",
+        "require_exact_time": true,
+        "minimum_forecasts": 1
+      }
+    },
+    {
+      "id": "bielsko-weather",
+      "text": "Podaj temperaturę i prawdopodobieństwo opadu w Bielsku-Białej za 6 godzin.",
+      "expected": {
+        "parameters": ["temperature_c", "precipitation_probability"],
+        "place_contains": "Bielsko",
+        "require_exact_time": true,
+        "minimum_forecasts": 2
+      }
+    }
+  ]
+}
