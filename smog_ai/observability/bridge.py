@@ -194,10 +194,18 @@ class LangfuseObservability:
         comment: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        # Langfuse Python SDK v4 queues scores asynchronously and may return
+        # ``None`` from create_score().  Generate the idempotency key locally
+        # so the API can always return a useful identifier and retries cannot
+        # create duplicate scores.
+        score_id = uuid.uuid4().hex
+        numeric_value = float(value)
         payload = {
             "trace_id": trace_id,
             "name": name,
-            "value": float(value),
+            "value": numeric_value,
+            "score_id": score_id,
+            "data_type": "NUMERIC",
         }
         if comment:
             payload["comment"] = comment
@@ -216,14 +224,16 @@ class LangfuseObservability:
                 # The fallback only works when called inside the current trace.
                 result = score_current_trace(
                     name=name,
-                    value=float(value),
+                    value=numeric_value,
                     comment=comment,
                     metadata=metadata,
                 )
             return {
                 "backend": self.backend_name,
                 "submitted": True,
-                "score_id": str(getattr(result, "id", "") or "") or None,
+                "score_id": str(getattr(result, "id", "") or score_id),
+                "data_type": "NUMERIC",
+                "value": numeric_value,
             }
         except Exception:
             logger.warning("Langfuse score submission failed", exc_info=True)

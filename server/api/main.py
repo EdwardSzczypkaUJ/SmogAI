@@ -101,7 +101,11 @@ async def lifespan(_: FastAPI):
         settings.nlp_provider,
         settings.observability_backend,
     )
-    yield
+    try:
+        yield
+    finally:
+        # HF21_LANGFUSE_SCORE_CONTRACT_V1: export queued traces and scores.
+        query_service.observability.flush()
 
 
 app = FastAPI(
@@ -347,6 +351,9 @@ def natural_language_query(payload: QueryRequest, request: Request) -> dict[str,
     except Exception as exc:
         logger.exception("Natural-language query failed")
         raise HTTPException(status_code=503, detail=f"Query service unavailable: {exc}") from exc
+    finally:
+        if settings.observability_flush_on_request:
+            query_service.observability.flush()
     return _powershell_safe_json(result.model_dump(mode="json"))
 
 
