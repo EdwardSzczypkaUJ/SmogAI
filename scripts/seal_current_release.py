@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import re
 import subprocess
 import sys
@@ -14,7 +13,6 @@ import zipfile
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
-
 
 SECRET_PATTERNS = {
     "OpenAI key": re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}"),
@@ -31,9 +29,12 @@ ALLOWED_ENV_EXAMPLES = {
     ".env.server.example",
     ".env.server.local.example",
 }
-EXCLUDED_PARTS = {
+EXCLUDED_ANYWHERE_PARTS = {
     ".git", ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache",
-    "node_modules", "data", "logs", "backups", "snapshots", "object-store",
+    "node_modules",
+}
+EXCLUDED_ROOT_PARTS = {
+    "data", "logs", "backups", "snapshots", "object-store",
     "training-datasets", "mlruns", "tmp", "build", "dist", "models",
     "reports", "exports", "server-data", "server_data", "artifacts",
     "cache", "progress", "runs", "private",
@@ -48,6 +49,12 @@ ALLOWED_SOURCE_SUFFIXES = {
     ".txt", ".toml", ".yaml", ".yml", ".json", ".jsonl", ".ini",
     ".cfg", ".conf", ".example", ".sql", ".html", ".css", ".js",
     ".ts", ".tsx", ".jsx", ".svg", ".tex", ".csv", ".geojson",
+}
+TRACKED_SOURCE_SUFFIXES = {".sha256", ".pdf", ".mako", ".xml"}
+TRACKED_SPECIAL_FILENAMES = {".editorconfig"}
+TRACKED_BINARY_ASSETS = {
+    "examples/dashboard_snapshot.example.json.gz",
+    "server/dashboard/resources/poland_dem_grid.json.gz",
 }
 BINARY_SUFFIXES = {
     ".png", ".jpg", ".jpeg", ".gif", ".pdf", ".zip", ".gz", ".joblib",
@@ -73,34 +80,54 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _excluded(relative: str) -> tuple[bool, str | None]:
+def _excluded(relative: str, *, tracked: bool = False) -> tuple[bool, str | None]:
     path = PurePosixPath(relative)
-    if any(part in EXCLUDED_PARTS for part in path.parts):
+    if any(
+        part in EXCLUDED_ANYWHERE_PARTS or part.startswith(".venv")
+        for part in path.parts
+    ):
         return True, "runtime/build/cache directory"
+    if path.parts and path.parts[0] in EXCLUDED_ROOT_PARTS:
+        return True, "runtime/build/cache root directory"
     if path.name.startswith(".env") and path.name not in ALLOWED_ENV_EXAMPLES:
         return True, "environment file"
     if SENSITIVE_NAMES.search(relative) and path.name not in ALLOWED_ENV_EXAMPLES:
         return True, "sensitive filename"
-    if path.suffix.lower() in BANNED_RUNTIME_SUFFIXES | {".pem", ".pfx", ".key"}:
+    if (
+        path.suffix.lower() in BANNED_RUNTIME_SUFFIXES | {".pem", ".pfx", ".key"}
+        and not (tracked and relative in TRACKED_BINARY_ASSETS)
+    ):
         return True, "runtime artifact, archive, database or key file"
-    if path.parts and (path.parts[0].startswith("_hf21_") or path.parts[0].startswith("SmogAI_HF21_Automation_v")):
+    if (
+        not tracked
+        and path.parts
+        and (
+            path.parts[0].startswith("_hf21_")
+            or path.parts[0].startswith("SmogAI_HF21_Automation_v")
+        )
+    ):
         return True, "temporary extracted hotfix payload"
     return False, None
 
 
-def _source_allowed(relative: str) -> tuple[bool, str | None]:
+def _source_allowed(relative: str, *, tracked: bool = False) -> tuple[bool, str | None]:
     path = PurePosixPath(relative)
     if path.name == ".gitkeep":
         return True, None
-    excluded, reason = _excluded(relative)
+    excluded, reason = _excluded(relative, tracked=tracked)
     if excluded:
         return False, reason
+    if tracked and relative in TRACKED_BINARY_ASSETS:
+        return True, None
+    if tracked and path.name in TRACKED_SPECIAL_FILENAMES:
+        return True, None
     if path.name in {
         "Dockerfile", "Procfile", "Makefile", "LICENSE", "NOTICE", "py.typed",
         ".gitignore", ".gitattributes", ".dockerignore",
     }:
         return True, None
-    if path.suffix.lower() not in ALLOWED_SOURCE_SUFFIXES:
+    allowed_suffixes = ALLOWED_SOURCE_SUFFIXES | (TRACKED_SOURCE_SUFFIXES if tracked else set())
+    if path.suffix.lower() not in allowed_suffixes:
         return False, "file type is not on the source/configuration allowlist"
     return True, None
 
@@ -108,7 +135,7 @@ def _source_allowed(relative: str) -> tuple[bool, str | None]:
 def _candidates(root: Path) -> list[str]:
     output = subprocess.run(
         ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-        cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        cwd=root, capture_output=True, check=False,
     )
     if output.returncode:
         raise RuntimeError(output.stderr.decode("utf-8", errors="replace"))
@@ -118,7 +145,7 @@ def _candidates(root: Path) -> list[str]:
 def _tracked(root: Path) -> list[str]:
     output = subprocess.run(
         ["git", "ls-files", "-z", "--cached"], cwd=root,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        capture_output=True, check=False,
     )
     if output.returncode:
         raise RuntimeError(output.stderr.decode("utf-8", errors="replace"))
@@ -153,7 +180,7 @@ def seal(root: Path, output: Path, label: str) -> dict[str, Any]:
 
     tracked_violations = []
     for relative in _tracked(root):
-        allowed, reason = _source_allowed(relative)
+        allowed, reason = _source_allowed(relative, tracked=True)
         if not allowed:
             tracked_violations.append({"path": relative, "reason": str(reason)})
     if tracked_violations:
@@ -170,8 +197,9 @@ def seal(root: Path, output: Path, label: str) -> dict[str, Any]:
     included: list[str] = []
     excluded: list[dict[str, str]] = []
     findings: list[dict[str, str]] = []
+    tracked = set(_tracked(root))
     for relative in _candidates(root):
-        allowed, reason = _source_allowed(relative)
+        allowed, reason = _source_allowed(relative, tracked=relative in tracked)
         source = root / Path(relative)
         if not allowed:
             excluded.append({"path": relative, "reason": str(reason)})
