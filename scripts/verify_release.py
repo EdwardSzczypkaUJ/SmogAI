@@ -379,7 +379,7 @@ class ReleaseGate:
             "precomputed-local-results",
             "SpatialSource",
         )
-        required_map = ("GeoJsonLayer", "ColumnLayer", "ScatterplotLayer", "TextLayer", "Wysokość 3D", "Nazwy miast", "Model i jakość", "Jak to działa", "temperature_c", "precipitation_mm")
+        required_map = ("GeoJsonLayer", "ColumnLayer", "ScatterplotLayer", "TextLayer", "Skala przewyższenia terenu 3D", "Nazwy miast", "Ranking i zwycięzcy", "Jakość odpowiedzi", "Jak to działa", "temperature_c", "precipitation_mm")
         required_api = (
             "/api/v1/spatial/manifest",
             "/api/v1/spatial/surface",
