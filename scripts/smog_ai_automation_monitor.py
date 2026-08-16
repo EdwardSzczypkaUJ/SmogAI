@@ -25,12 +25,23 @@ from plotly.subplots import make_subplots
 st.set_page_config(page_title="SmogAI — automat", page_icon="🌦️", layout="wide")
 runtime = Path(os.environ.get("SMOG_AI_DATA_ROOT", r"C:\ProgramData\SmogAI"))
 root = runtime / "logs" / "automation"
+try:
+    MONITOR_REFRESH_SECONDS = min(
+        300,
+        max(2, int(os.environ.get("SMOG_AI_MONITOR_REFRESH_SECONDS", "30"))),
+    )
+except (TypeError, ValueError):
+    MONITOR_REFRESH_SECONDS = 30
 DISPLAY_TIMEZONE = "Europe/Warsaw"
 WARSAW_ZONE = ZoneInfo(DISPLAY_TIMEZONE)
 TERMINAL_RUN_STATUSES = {
     "success", "failed", "cancelled", "canceled", "warning", "partial_success",
     "interrupted", "przerwany",
 }
+
+
+def refresh_interval(multiplier: int = 1) -> str:
+    return f"{min(900, MONITOR_REFRESH_SECONDS * max(1, multiplier))}s"
 
 # Operational estimates used only until a comparable successful stage exists.
 STAGE_FALLBACK_SECONDS = {
@@ -1565,7 +1576,10 @@ def render_details_content(*, section: str = "all") -> None:
 
 
 st.title("SmogAI — monitoring automatu")
-st.caption(f"Runtime: {runtime}")
+st.caption(
+    f"Runtime: {runtime} · bazowy interwał odświeżania: "
+    f"{MONITOR_REFRESH_SECONDS} s"
+)
 table_width = st.slider("Minimalna szerokość szerokich tabel [px]", 800, 3000, 1600, 100)
 wrap_table_text = st.toggle(
     "Zawijaj długi tekst w komórkach tabel",
@@ -1607,7 +1621,7 @@ st.markdown(
 # Streamlit >= 1.37 odświeża wyłącznie ten fragment DOM. Nie przeładowuje strony,
 # więc nagłówek, pozycja przewijania i pozostałe komponenty nie migają.
 if hasattr(st, "fragment"):
-    @st.fragment(run_every="3s")
+    @st.fragment(run_every=refresh_interval())
     def status_fragment() -> None:
         render_status_content()
 
@@ -1616,19 +1630,19 @@ if hasattr(st, "fragment"):
     with st.expander("3. Wykresy obciążenia", expanded=True):
         chart_left, chart_right = st.columns(2)
 
-        @st.fragment(run_every="5s")
+        @st.fragment(run_every=refresh_interval(2))
         def cpu_fragment() -> None:
             render_chart_content("cpu")
 
-        @st.fragment(run_every="7s")
+        @st.fragment(run_every=refresh_interval(2))
         def ram_fragment() -> None:
             render_chart_content("ram")
 
-        @st.fragment(run_every="9s")
+        @st.fragment(run_every=refresh_interval(3))
         def disk_fragment() -> None:
             render_chart_content("disk")
 
-        @st.fragment(run_every="11s")
+        @st.fragment(run_every=refresh_interval(3))
         def network_fragment() -> None:
             render_chart_content("network")
 
@@ -1639,21 +1653,21 @@ if hasattr(st, "fragment"):
             ram_fragment()
             network_fragment()
 
-    @st.fragment(run_every="2s")
+    @st.fragment(run_every=refresh_interval(2))
     def models_fragment() -> None:
         render_models_content(show_heading=False)
 
     with st.expander("4. Modele szkolone i wybrane", expanded=False):
         models_fragment()
 
-    @st.fragment(run_every="4s")
+    @st.fragment(run_every=refresh_interval(4))
     def diagnostics_fragment() -> None:
         render_details_content(section="diagnostics")
 
     with st.expander("5. Plan, ostrzeżenia i diagnostyka", expanded=False):
         diagnostics_fragment()
 
-    @st.fragment(run_every="4s")
+    @st.fragment(run_every=refresh_interval())
     def stages_fragment() -> None:
         render_details_content(section="stages")
 
