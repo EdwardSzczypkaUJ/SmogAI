@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import OrderedDict
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
@@ -44,23 +45,48 @@ class SpatialSource(Protocol):
 class ObjectStoreSpatialSource:
     """Read-only source of locally precomputed surface artifacts."""
 
-    def __init__(self, repository: ArtifactRepository, *, cache_ttl_seconds: float = 60.0) -> None:
+    def __init__(
+        self,
+        repository: ArtifactRepository,
+        *,
+        cache_ttl_seconds: float = 60.0,
+        cache_max_items: int = 64,
+    ) -> None:
         self.repository = repository
         self.cache_ttl_seconds = max(0.0, float(cache_ttl_seconds))
+        self.cache_max_items = max(1, int(cache_max_items))
         self.backend_name = f"{repository.store.backend_name}-spatial"
-        self._cache: dict[str, tuple[float, Any]] = {}
+        self._pointer_cache: tuple[float, Any] | None = None
+        self._immutable_cache: OrderedDict[str, Any] = OrderedDict()
         self._lock = threading.RLock()
 
-    def _cached(self, key: str, loader):  # type: ignore[no-untyped-def]
+    def _cached_pointer(self, loader):  # type: ignore[no-untyped-def]
         now = time.monotonic()
         with self._lock:
-            item = self._cache.get(key)
+            item = self._pointer_cache
             if item is not None and (self.cache_ttl_seconds == 0 or item[0] >= now):
                 return item[1]
         value = loader()
         expires = float("inf") if self.cache_ttl_seconds == 0 else now + self.cache_ttl_seconds
         with self._lock:
-            self._cache[key] = (expires, value)
+            self._pointer_cache = (expires, value)
+        return value
+
+    def _cached_immutable(self, key: str, loader):  # type: ignore[no-untyped-def]
+        with self._lock:
+            if key in self._immutable_cache:
+                value = self._immutable_cache.pop(key)
+                self._immutable_cache[key] = value
+                return value
+        value = loader()
+        with self._lock:
+            if key in self._immutable_cache:
+                cached = self._immutable_cache.pop(key)
+                self._immutable_cache[key] = cached
+                return cached
+            self._immutable_cache[key] = value
+            while len(self._immutable_cache) > self.cache_max_items:
+                self._immutable_cache.popitem(last=False)
         return value
 
     def ping(self) -> None:
@@ -68,8 +94,7 @@ class ObjectStoreSpatialSource:
 
     def latest_pointer(self) -> dict[str, Any] | None:
         try:
-            return self._cached(
-                "pointer",
+            return self._cached_pointer(
                 lambda: self.repository.get_json(self.repository.layout.latest_spatial_pointer),
             )
         except Exception:
@@ -81,7 +106,7 @@ class ObjectStoreSpatialSource:
             return None
         key = str(pointer["manifest_key"])
         try:
-            return self._cached(f"json:{key}", lambda: self.repository.get_json(key))
+            return self._cached_immutable(f"json:{key}", lambda: self.repository.get_json(key))
         except Exception:
             return None
 
@@ -150,14 +175,14 @@ class ObjectStoreSpatialSource:
         if not entry:
             return None
         key = str(entry["object_key"])
-        return self._cached(f"gzip:{key}", lambda: self.repository.get_gzip_json(key))
+        return self._cached_immutable(f"gzip:{key}", lambda: self.repository.get_gzip_json(key))
 
     def surface_from_entry(self, entry: dict[str, Any]) -> dict[str, Any] | None:
         key = entry.get("object_key")
         if not key:
             return None
         normalized = str(key)
-        return self._cached(
+        return self._cached_immutable(
             f"gzip:{normalized}",
             lambda: self.repository.get_gzip_json(normalized),
         )
@@ -166,7 +191,9 @@ class ObjectStoreSpatialSource:
         manifest = self.latest_manifest()
         key = (manifest or {}).get("boundary_key") or self.repository.layout.spatial_boundary
         try:
-            return self._cached(f"json:{key}", lambda: self.repository.get_json(str(key)))
+            if str(key).endswith(".gz"):
+                return self._cached_immutable(f"gzip:{key}", lambda: self.repository.get_gzip_json(str(key)))
+            return self._cached_immutable(f"json:{key}", lambda: self.repository.get_json(str(key)))
         except Exception:
             return None
 
@@ -174,7 +201,12 @@ class ObjectStoreSpatialSource:
         manifest = self.latest_manifest()
         key = (manifest or {}).get("places_key") or self.repository.layout.spatial_places
         try:
-            payload = self._cached(f"json:{key}", lambda: self.repository.get_json(str(key)))
+            if str(key).endswith(".gz"):
+                payload = self._cached_immutable(
+                    f"gzip:{key}", lambda: self.repository.get_gzip_json(str(key))
+                )
+            else:
+                payload = self._cached_immutable(f"json:{key}", lambda: self.repository.get_json(str(key)))
             return list(payload.get("places", [])) if isinstance(payload, dict) else []
         except Exception:
             return []

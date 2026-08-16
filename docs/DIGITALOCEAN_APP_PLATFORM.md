@@ -2,16 +2,22 @@
 
 ## 1. Warunek wejściowy
 
-Najpierw lokalny `first-run` musi opublikować do prywatnego Space:
+Najpierw lokalny automat musi opublikować do prywatnego Space:
 
 ```text
-forecasts/latest.json
-maps/latest.json
+serving/latest.json
+serving/releases/release=<ID>/manifest.json
+serving/releases/release=<ID>/surfaces/<PARAMETR>/h001.json.gz
 documentation/latest.json
 ```
 
-App Platform odczytuje gotowe wyniki. Nie zawiera kolektora, treningu,
-predykcji ani interpolatora przestrzennego.
+App Platform odczytuje gotowe, skompresowane wyniki. Nie zawiera kolektora,
+treningu, predykcji ani interpolatora przestrzennego. Nie otrzymuje bazy SQLite,
+historii pomiarów, datasetów treningowych ani ciężkiego `dashboard_snapshot`.
+
+`serving/latest.json` jest małym, atomowo podmienianym wskaźnikiem. FastAPI
+czyta manifest, a następnie pobiera i rozpakowuje tylko jedną potrzebną
+powierzchnię parametr × godzina. Nie rozpakowuje całego wydania podczas startu.
 
 ## 2. Komponenty
 

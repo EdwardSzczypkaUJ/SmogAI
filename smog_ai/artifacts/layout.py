@@ -226,12 +226,12 @@ class ArtifactLayout:
         horizon: int,
     ) -> str:
         return join_key(
-            "maps",
-            "runs",
-            f"surface-set={sanitize_component(surface_set_id)}",
-            f"parameter={sanitize_component(parameter)}",
-            f"horizon={horizon}",
-            "surface.json.gz",
+            "serving",
+            "releases",
+            f"release={sanitize_component(surface_set_id)}",
+            "surfaces",
+            sanitize_component(parameter),
+            f"h{horizon:03d}.json.gz",
         )
 
     def spatial_surface_metadata(
@@ -241,33 +241,33 @@ class ArtifactLayout:
         horizon: int,
     ) -> str:
         return join_key(
-            "maps",
-            "runs",
-            f"surface-set={sanitize_component(surface_set_id)}",
-            f"parameter={sanitize_component(parameter)}",
-            f"horizon={horizon}",
-            "metadata.json",
+            "serving",
+            "releases",
+            f"release={sanitize_component(surface_set_id)}",
+            "metadata",
+            sanitize_component(parameter),
+            f"h{horizon:03d}.json",
         )
 
     def spatial_manifest(self, surface_set_id: str) -> str:
         return join_key(
-            "maps",
-            "runs",
-            f"surface-set={sanitize_component(surface_set_id)}",
+            "serving",
+            "releases",
+            f"release={sanitize_component(surface_set_id)}",
             "manifest.json",
         )
 
     @property
     def latest_spatial_pointer(self) -> str:
-        return join_key("maps", "latest.json")
+        return join_key("serving", "latest.json")
 
     @property
     def spatial_boundary(self) -> str:
-        return join_key("maps", "static", "poland-boundary.geojson")
+        return join_key("serving", "static", "poland-boundary.geojson.gz")
 
     @property
     def spatial_places(self) -> str:
-        return join_key("maps", "static", "polish-places.json")
+        return join_key("serving", "static", "polish-places.json.gz")
 
     def forecast_snapshot(self, publication_id: str) -> str:
         return join_key(

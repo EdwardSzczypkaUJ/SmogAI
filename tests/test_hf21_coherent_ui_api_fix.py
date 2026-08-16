@@ -104,10 +104,21 @@ def test_confirmed_request_skips_llm_and_returns_five_parameters() -> None:
                 "precipitation_probability",
                 "precipitation_mm",
             ],
+            parser_provider="openai_compatible",
+            parser_model="gpt-4.1-mini",
+            parser_prompt_tokens=321,
+            parser_completion_tokens=45,
         ),
         include_timeline=False,
     )
-    assert response.interpretation.provider == "confirmed_structured_request"
+    assert response.interpretation.provider == "openai_compatible"
+    assert response.interpretation.model == "gpt-4.1-mini"
+    assert response.interpretation.prompt_tokens == 321
+    assert response.interpretation.completion_tokens == 45
+    assert response.interpretation.raw_response == {
+        "usage_source": "carried_from_query_preview",
+        "confirmed_structured_request": True,
+    }
     assert [row.parameter for row in response.forecasts] == [
         "PM10",
         "PM2.5",
@@ -173,8 +184,19 @@ def test_dashboard_has_lazy_timeline_and_polish_glyph_contract() -> None:
     assert 'key="hf21_confirmation_parameters"' in source
     assert "dark-matter-gl-style/style.json" in source
     assert "dark-matter-nolabels-gl-style" not in source
-    assert "Rejestrowanie jakości: MLflow i Langfuse" in source
-    assert "Runy kandydatów" in source
+    assert "QUERY_PARAMETER_OPTIONS = _manifest_parameter_options(manifest)" in source
+    assert "sorted(published_set - set(ordered), key=str.casefold)" in source
+    assert "def _manifest_parameter_quality(" in source
+    assert "def _parameter_option_label(" in source
+    assert 'f"🧪 {label} — EKSPERYMENTALNY"' in source
+    assert 'format_func=lambda value: _parameter_option_label(value, manifest)' in source
+    assert "QUERY_PARAMETER_OPTIONS = _manifest_parameter_options(manifest)" in source
+    assert "sorted(published_set - set(ordered), key=str.casefold)" in source
+    assert '"💰 Koszty i wykorzystanie"' in source
+    assert '"🤖 OpenAI", "🔭 Langfuse", "☁️ DigitalOcean"' in source
+    assert 'kpi[1].metric("Kandydaci MLflow"' in source
+    assert "Historia tokenów i kosztu OpenAI" in source
+    assert "Metryki użycia DigitalOcean nie są jeszcze połączone" in source
     assert "opacity=0.78 if view_3d else 0.52" in source
     main_source = (root / "server" / "api" / "main.py").read_text(
         encoding="utf-8-sig"

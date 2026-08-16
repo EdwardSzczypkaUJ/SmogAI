@@ -47,14 +47,51 @@ def _iso(value: datetime | None) -> str | None:
     return value.astimezone(UTC).isoformat() if value is not None else None
 
 
-def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
+def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> bool:
+    """Best-effort atomic telemetry write that never aborts primary work.
+
+    On Windows a dashboard reader, indexer or antivirus can briefly hold the
+    destination and make ``os.replace`` fail with WinError 5/32.  A unique
+    temporary name prevents writers from colliding.  Replacement is retried;
+    a persistent telemetry-only failure is logged and ignored.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n",
-        encoding="utf-8",
+    temporary = path.with_name(
+        f"{path.name}.{__import__('os').getpid()}.{threading.get_ident()}."
+        f"{uuid.uuid4().hex}.tmp"
     )
-    temporary.replace(path)
+    try:
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n",
+            encoding="utf-8",
+        )
+        for attempt in range(8):
+            try:
+                temporary.replace(path)
+                return True
+            except PermissionError as exc:
+                if attempt == 7:
+                    logger.warning(
+                        "Progress telemetry file remains locked; primary task continues: %s (%s)",
+                        path,
+                        exc,
+                    )
+                    return False
+                time.sleep(min(0.5, 0.025 * (2**attempt)))
+    except OSError as exc:
+        logger.warning(
+            "Cannot update progress telemetry; primary task continues: %s (%s)",
+            path,
+            exc,
+        )
+        return False
+    finally:
+        try:
+            if temporary.exists():
+                temporary.unlink()
+        except OSError:
+            pass
+    return False
 
 
 def _format_seconds(value: float | None) -> str | None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gzip
+import json
 import logging
 from datetime import timedelta
 from pathlib import Path
@@ -58,16 +59,17 @@ def _publish_http(
 def _publish_object_store(
     *,
     compressed: bytes,
-    payload: SnapshotPayload,
+    publication_id: str,
+    metadata: dict[str, object],
     checksum: str,
     config: AppConfig,
 ) -> dict[str, str | int]:
     repository = create_artifact_repository(config)
     stored = repository.publish_snapshot(
         compressed=compressed,
-        publication_id=payload.metadata.publication_id,
+        publication_id=publication_id,
         checksum=checksum,
-        metadata=payload.metadata.model_dump(mode="json"),
+        metadata=metadata,
     )
     return {
         "object_key": stored.key,
@@ -75,6 +77,48 @@ def _publish_object_store(
         "size": stored.size,
         "backend": repository.store.backend_name,
     }
+
+
+def _metadata_sidecar(path: Path) -> Path:
+    return path.with_suffix(path.suffix + ".metadata.json")
+
+
+def _load_snapshot_metadata(
+    path: Path,
+    *,
+    publication_id: str,
+    checksum: str,
+) -> tuple[dict[str, object], bool]:
+    """Load the small publication contract without inflating the payload.
+
+    The legacy fallback is retained only for snapshots created before HF21 v4.
+    Every newly built snapshot has a sidecar and never enters that expensive
+    compatibility branch.
+    """
+    sidecar = _metadata_sidecar(path)
+    if sidecar.exists():
+        envelope = json.loads(sidecar.read_text(encoding="utf-8-sig"))
+        metadata = dict(envelope.get("metadata") or {})
+        if str(metadata.get("publication_id")) != publication_id:
+            raise ValueError("Snapshot metadata sidecar publication_id mismatch")
+        if str(metadata.get("checksum")) != checksum:
+            raise ValueError("Snapshot metadata sidecar checksum mismatch")
+        return metadata, False
+
+    logger.warning(
+        "Legacy snapshot has no metadata sidecar; using one-time full payload "
+        "validation publication_id=%s",
+        publication_id,
+    )
+    compressed = path.read_bytes()
+    payload = SnapshotPayload.model_validate_json(gzip.decompress(compressed))
+    return payload.metadata.model_dump(mode="json"), True
+
+
+def _as_datetime(value: object) -> object:
+    if value is None or not isinstance(value, str):
+        return value
+    return __import__("datetime").datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def retry_publications(session: Session, config: AppConfig, *, limit: int = 20) -> StageStats:
@@ -93,17 +137,24 @@ def retry_publications(session: Session, config: AppConfig, *, limit: int = 20) 
         try:
             if not path.exists():
                 raise FileNotFoundError(f"Snapshot payload missing: {path}")
+            metadata, legacy_payload_validation = _load_snapshot_metadata(
+                path,
+                publication_id=row.publication_id,
+                checksum=row.checksum,
+            )
             compressed = path.read_bytes()
-            payload = SnapshotPayload.model_validate_json(gzip.decompress(compressed))
             transport = config.publication.transport
             details: dict[str, object] = {
                 "publication_id": row.publication_id,
                 "transport": transport,
+                "metadata_sidecar": not legacy_payload_validation,
+                "full_payload_validation": legacy_payload_validation,
             }
             if transport in {"object_store", "both"}:
                 details["object_store"] = _publish_object_store(
                     compressed=compressed,
-                    payload=payload,
+                    publication_id=row.publication_id,
+                    metadata=metadata,
                     checksum=row.checksum,
                     config=config,
                 )
@@ -122,14 +173,14 @@ def retry_publications(session: Session, config: AppConfig, *, limit: int = 20) 
             register_published_snapshot(
                 session,
                 publication_id=row.publication_id,
-                schema_version=payload.metadata.schema_version,
-                generated_at=payload.metadata.generated_at,
-                data_start=payload.metadata.data_start,
-                data_end=payload.metadata.data_end,
-                model_version=payload.metadata.model_version,
-                record_count=payload.metadata.record_count,
+                schema_version=str(metadata.get("schema_version") or "1.1"),
+                generated_at=_as_datetime(metadata.get("generated_at")),
+                data_start=_as_datetime(metadata.get("data_start")),
+                data_end=_as_datetime(metadata.get("data_end")),
+                model_version=(str(metadata["model_version"]) if metadata.get("model_version") is not None else None),
+                record_count=int(metadata.get("record_count") or 0),
                 checksum=row.checksum,
-                source_host_id=payload.metadata.source_host_id,
+                source_host_id=str(metadata.get("source_host_id") or config.source_host_id),
                 payload_path=str(path),
             ).published_at = utc_now()
             stats.inserted += 1

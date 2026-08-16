@@ -22,6 +22,7 @@ from server.application.query import (
     TimelineRequest,
 )
 from server.application.runtime import (
+    create_analytics_repository_from_settings,
     create_artifact_repository_from_settings,
     create_documentation_source,
     create_model_source,
@@ -37,6 +38,8 @@ from smog_ai.observability.feedback import (
     LocalPromptFeedbackStore,
     PromptFeedbackRecord,
 )
+from smog_ai.observability.analytics import read_langfuse_quality_summary
+from smog_ai.observability.own_store import OwnAnalyticsStore
 
 logger = logging.getLogger("smog_ai.server")
 settings = ServerSettings.from_env()
@@ -58,6 +61,20 @@ query_service: ForecastQueryService = create_query_service(
 documentation_source = create_documentation_source(settings, _artifact_repository)
 model_source = create_model_source(settings, _artifact_repository)
 feedback_store = LocalPromptFeedbackStore(settings.prompt_feedback_path)
+_analytics_repository = (
+    create_analytics_repository_from_settings(settings)
+    if settings.own_analytics_enabled and settings.uses_separate_analytics_store
+    else _artifact_repository
+)
+own_analytics_store = (
+    OwnAnalyticsStore(
+        _analytics_repository,
+        private_prefix=settings.own_analytics_private_prefix,
+        retention_days=settings.own_analytics_retention_days,
+    )
+    if settings.own_analytics_enabled and _analytics_repository is not None
+    else None
+)
 _requests: dict[str, deque[float]] = defaultdict(deque)
 
 
@@ -81,10 +98,11 @@ async def lifespan(_: FastAPI):
     store.ping()
     if query_service.spatial_source is not None:
         query_service.spatial_source.ping()
-    # Warm the two small pointers and cache the latest snapshot once during startup.
-    # A cold user query should not spend most of its timeout downloading metadata.
+    if own_analytics_store is not None:
+        own_analytics_store.repository.ping()
+    # Warm only the small spatial pointer/manifest. Surface payloads and the full
+    # forecast snapshot stay lazy so startup does not transfer data no user asked for.
     try:
-        store.latest_payload()
         if query_service.spatial_source is not None:
             query_service.spatial_source.latest_manifest()
     except Exception as exc:
@@ -210,6 +228,16 @@ def health() -> dict[str, Any]:
     except Exception as exc:
         logger.exception("Health check failed")
         raise HTTPException(status_code=503, detail=f"Storage unavailable: {exc}") from exc
+    if spatial_manifest:
+        # Serving v2 deliberately has no giant forecast snapshot/audit history.
+        # A valid immutable release is the publication unit exposed by health.
+        summary = {
+            **summary,
+            "publication_count": max(1, int(summary.get("publication_count", 0))),
+            "latest_publication_id": spatial_manifest.get("release_id")
+            or spatial_manifest.get("surface_set_id"),
+            "latest_received_at": spatial_manifest.get("generated_at"),
+        }
     return {
         "status": "ok",
         "service": "smog-ai-query-api",
@@ -224,6 +252,8 @@ def health() -> dict[str, Any]:
         "spatial_surface_set_id": (spatial_manifest or {}).get("surface_set_id"),
         "spatial_generated_at": (spatial_manifest or {}).get("generated_at"),
         "spatial_surface_count": len((spatial_manifest or {}).get("surfaces", [])),
+        "serving_contract": (spatial_manifest or {}).get("contract"),
+        "serving_release_id": (spatial_manifest or {}).get("release_id"),
         **summary,
     }
 
@@ -354,7 +384,13 @@ def natural_language_query(payload: QueryRequest, request: Request) -> dict[str,
     finally:
         if settings.observability_flush_on_request:
             query_service.observability.flush()
-    return _powershell_safe_json(result.model_dump(mode="json"))
+    response_payload = result.model_dump(mode="json")
+    if own_analytics_store is not None:
+        try:
+            own_analytics_store.save_interaction(response_payload)
+        except Exception:
+            logger.exception("Private interaction event could not be stored")
+    return _powershell_safe_json(response_payload)
 
 
 @app.post("/api/v1/timeline")
@@ -408,7 +444,7 @@ def spatial_boundary() -> JSONResponse:
 def spatial_surface(
     parameter: str = Query(
         default="PM10",
-        pattern=r"^(PM10|PM2\.5|temperature_c|precipitation_probability|precipitation_mm)$",
+        pattern=r"^[A-Za-z0-9_.-]{1,64}$",
     ),
     horizon_hours: int | None = Query(default=None, ge=1, le=168),
     target_time: str | None = Query(default=None),
@@ -425,6 +461,14 @@ def spatial_surface(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail="Invalid target_time") from exc
     manifest = query_service.spatial_source.latest_manifest() or {}
+    published_parameters = {
+        str(value) for value in manifest.get("parameters", []) if value
+    }
+    if published_parameters and parameter not in published_parameters:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Parameter {parameter!r} is not present in the active serving release",
+        )
     payload = query_service.spatial_source.surface(
         parameter=parameter,
         horizon_hours=horizon_hours,
@@ -528,6 +572,22 @@ def submit_prompt_feedback(payload: PromptFeedbackRequest) -> dict[str, Any]:
         },
     )
     local_result = feedback_store.append(record)
+    own_result: dict[str, Any] | None = None
+    if own_analytics_store is not None:
+        try:
+            own_result = own_analytics_store.save_feedback(
+                feedback_id=record.feedback_id,
+                trace_id=payload.trace_id,
+                request_id=payload.request_id,
+                score=payload.score,
+                label=payload.label,
+                comment=payload.comment,
+                question=payload.question,
+                components=dict(payload.metadata.get("component_scores") or {}),
+            )
+        except Exception as exc:
+            logger.exception("Private feedback event could not be stored")
+            own_result = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
     remote_result = query_service.observability.score(
         trace_id=payload.trace_id,
         name="answer_quality",
@@ -546,6 +606,7 @@ def submit_prompt_feedback(payload: PromptFeedbackRequest) -> dict[str, Any]:
         "status": "ok",
         "feedback_id": record.feedback_id,
         "local": local_result,
+        "own_analytics": own_result,
         "observability": remote_result,
     }
 
@@ -555,6 +616,33 @@ def prompt_feedback_summary() -> dict[str, Any]:
     if not settings.prompt_feedback_enabled:
         raise HTTPException(status_code=404, detail="Prompt feedback is disabled")
     return feedback_store.summary()
+
+
+@app.get("/api/v1/quality/overview")
+def quality_overview() -> dict[str, Any]:
+    """Return own ObjectStore analytics; external observability is secondary."""
+    local = feedback_store.summary()
+    own = own_analytics_store.summary() if own_analytics_store is not None else {
+        "status": "disabled", "source": "own_object_store", "count": 0,
+        "average_score": None, "positive_fraction": None, "daily": [],
+    }
+    remote = (
+        read_langfuse_quality_summary()
+        if settings.observability_backend == "langfuse"
+        else {
+            "status": "disabled", "backend": settings.observability_backend,
+            "count": 0, "average_score": None, "positive_fraction": None,
+            "daily": [], "recent": [],
+        }
+    )
+    return {
+        "schema_version": "1.0",
+        "backend": settings.observability_backend,
+        "score_name": "answer_quality",
+        "primary": own,
+        "remote": remote,
+        "local": local,
+    }
 
 
 @app.get("/api/v1/docs/manifest")

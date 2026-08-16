@@ -125,6 +125,9 @@ def model_publication_failures(
     metrics = dict(model.metrics_json or {})
     failures: list[dict[str, Any]] = []
     snapshot = _snapshot_provenance(metrics)
+    quality_status = str(metrics.get("quality_status") or "approved").lower()
+    if quality_status == "accepted":
+        quality_status = "approved"
 
     if not model.active:
         failures.append({"reason": "model_not_active"})
@@ -138,6 +141,17 @@ def model_publication_failures(
         failures.append({"reason": "dataset_sha256_missing"})
     if snapshot.get("immutable") is not True:
         failures.append({"reason": "immutable_snapshot_required"})
+    if quality_status != "approved":
+        failures.append(
+            {
+                "reason": "model_not_approved",
+                "quality_status": quality_status,
+                "details": (
+                    (metrics.get("quality_classification") or {}).get("reasons")
+                    or []
+                ),
+            }
+        )
 
     if model.parameter == "precipitation_mm":
         gate = dict(metrics.get("precipitation_quality_gate") or {})

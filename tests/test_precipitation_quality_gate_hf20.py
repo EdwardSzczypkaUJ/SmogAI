@@ -30,7 +30,7 @@ def test_precipitation_metrics_include_amount_and_occurrence_baselines(app_confi
 
     gate = _precipitation_quality_gate(app_config, metrics)
     assert "thresholds" in gate
-    assert gate["status"] in {"accepted", "experimental"}
+    assert gate["status"] in {"approved", "experimental"}
 
 
 def test_precipitation_gate_rejects_missing_baseline_metrics(app_config) -> None:  # type: ignore[no-untyped-def]

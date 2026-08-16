@@ -1,16 +1,21 @@
-.venv/
+# Python and test caches
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .coverage
 htmlcov/
+
+# Virtual environments and local configuration
+.venv/
+venv/
 .env
 *.env
 !*.env.example
-.idea/
-.vscode/
-.DS_Store
-Thumbs.db
+!*.example.env
+
+# Runtime data with optional tracked placeholders
 /data/*
 !/data/.gitkeep
 /models/*
@@ -25,15 +30,29 @@ Thumbs.db
 !/tmp/.gitkeep
 server/data/
 server/snapshots/
-*.db
-*.db-wal
-*.db-shm
-.ruff_cache/
-.mypy_cache/
+/server_data/
+
+# Generated packages, databases and release reports
 build/
 dist/
 *.egg-info/
-/server_data/
-
+*.db
+*.db-wal
+*.db-shm
 release-verification.json
 *.release-verification.json
+
+# Local automation output and temporary artifacts
+_hotfix_backups/
+SmogAI_HF21_Automation_v*/
+*.tmp
+*.temp
+*.log
+logs.txt
+.hf21-*.json
+
+# Editors and operating systems
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store

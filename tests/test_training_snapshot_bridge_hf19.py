@@ -183,3 +183,41 @@ def test_latest_pointer_and_status_are_versioned(engine, app_config) -> None:  #
     }
     assert latest.database_sha256
     assert latest.manifest_path.exists()
+
+
+def test_snapshot_applies_explicit_training_window(engine, app_config) -> None:  # type: ignore[no-untyped-def]
+    seed_basic(engine, hours=72)
+    with session_scope(engine) as session:
+        minimum = session.scalar(select(func.min(AirMeasurement.measurement_time)))
+        maximum = session.scalar(select(func.max(AirMeasurement.measurement_time)))
+    assert minimum is not None and maximum is not None
+    start = (minimum + timedelta(hours=20)).replace(tzinfo=UTC)
+    end = (maximum - timedelta(hours=10)).replace(tzinfo=UTC)
+
+    snapshot = create_training_snapshot_bridge(app_config).create(
+        profile="quick",
+        targets=["PM10"],
+        mirror_manifest=False,
+        training_start=start,
+        training_end=end,
+    )
+    snapshot_engine = create_snapshot_engine(snapshot.database_path)
+    try:
+        with session_scope(snapshot_engine) as session:
+            bounded_minimum = session.scalar(
+                select(func.min(AirMeasurement.measurement_time))
+            )
+            bounded_maximum = session.scalar(
+                select(func.max(AirMeasurement.measurement_time))
+            )
+        assert bounded_minimum is not None and bounded_minimum >= start.replace(tzinfo=None)
+        assert bounded_maximum is not None and bounded_maximum < end.replace(tzinfo=None)
+        assert snapshot.training_start == start
+        assert snapshot.training_end == end
+        assert snapshot.rows_removed_by_time_window
+        assert snapshot.rows_removed_by_time_window["air_measurements"] > 0
+        manifest = snapshot.as_dict()
+        assert manifest["training_start"] == start.isoformat()
+        assert manifest["training_end"] == end.isoformat()
+    finally:
+        snapshot_engine.dispose()

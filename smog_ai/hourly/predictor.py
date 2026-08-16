@@ -42,6 +42,7 @@ from smog_ai.hourly.trainer import (
 )
 from smog_ai.modeling import ModelPredictContext
 from smog_ai.progress import ProgressReporter, WeightedStageProgress
+from smog_ai.quality import quality_metadata
 from smog_ai.time_utils import ensure_utc, utc_now
 
 PARAMETER_UNITS: dict[str, str] = {
@@ -350,6 +351,7 @@ def _feature_payload(
             "server_computation": "none",
         }
     )
+    payload.update(quality_metadata(target, dict(model.metrics_json or {})))
     if target in {"precipitation_mm", "precipitation_amount_if_rain_mm"}:
         period = config.hourly_forecasting.precipitation.accumulation_period_hours
         payload.update(

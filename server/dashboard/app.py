@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# HF21_STREAMLIT_WIDTH_API_V2
+
 import hashlib
 import gzip
 import json
@@ -22,6 +24,7 @@ import folium
 from streamlit_folium import st_folium
 
 # HF21_COHERENT_UI_API_FIX_V1
+# HF21_MODEL_DECISION_UI_REPORT_MONITOR_V1
 
 APP_VERSION = os.getenv("SMOG_AI_APP_VERSION", "1.7.0")
 CUSTOMER_NAME = os.getenv("SMOG_AI_CUSTOMER_NAME", "Smog AI Polska")
@@ -52,6 +55,281 @@ PLOTLY_CHART_CONFIG: dict[str, Any] = {
     "scrollZoom": True,
     "modeBarButtonsToRemove": ["lasso2d", "select2d"],
 }
+
+# Default public list price for gpt-4.1-mini (USD per 1M tokens).  Production
+# can override both values in the environment without rebuilding the image.
+OPENAI_INPUT_USD_PER_1M = float(
+    os.getenv("SMOG_AI_OPENAI_INPUT_USD_PER_1M", "0.40")
+)
+OPENAI_OUTPUT_USD_PER_1M = float(
+    os.getenv("SMOG_AI_OPENAI_OUTPUT_USD_PER_1M", "1.60")
+)
+USD_PLN_RATE = float(os.getenv("SMOG_AI_USD_PLN_RATE", "0") or 0)
+LANGFUSE_PLAN_NAME = os.getenv("SMOG_AI_LANGFUSE_PLAN_NAME", "Hobby / własne konto")
+LANGFUSE_MONTHLY_USD = float(os.getenv("SMOG_AI_LANGFUSE_MONTHLY_USD", "0") or 0)
+DIGITALOCEAN_APP_MONTHLY_USD = float(
+    os.getenv("SMOG_AI_DIGITALOCEAN_APP_MONTHLY_USD", "5") or 0
+)
+DIGITALOCEAN_SPACES_MONTHLY_USD = float(
+    os.getenv("SMOG_AI_DIGITALOCEAN_SPACES_MONTHLY_USD", "5") or 0
+)
+DIGITALOCEAN_OVERAGE_MONTHLY_USD = float(
+    os.getenv("SMOG_AI_DIGITALOCEAN_OVERAGE_MONTHLY_USD", "0") or 0
+)
+EXPECTED_MONTHLY_QUERIES = int(
+    os.getenv("SMOG_AI_EXPECTED_MONTHLY_QUERIES", "1000") or 0
+)
+DIGITALOCEAN_SPACES_STORAGE_USED_GB = float(
+    os.getenv("SMOG_AI_DIGITALOCEAN_SPACES_STORAGE_USED_GB", "0") or 0
+)
+DIGITALOCEAN_SPACES_TRANSFER_USED_GB = float(
+    os.getenv("SMOG_AI_DIGITALOCEAN_SPACES_TRANSFER_USED_GB", "0") or 0
+)
+DIGITALOCEAN_APP_TRANSFER_USED_GB = float(
+    os.getenv("SMOG_AI_DIGITALOCEAN_APP_TRANSFER_USED_GB", "0") or 0
+)
+DIGITALOCEAN_USAGE_SOURCE = os.getenv(
+    "SMOG_AI_DIGITALOCEAN_USAGE_SOURCE", "not_connected"
+)
+
+
+def _query_cost(response: dict[str, Any]) -> dict[str, Any]:
+    interpretation = dict(response.get("interpretation") or {})
+    prompt_tokens = int(interpretation.get("prompt_tokens") or 0)
+    completion_tokens = int(interpretation.get("completion_tokens") or 0)
+    provider = str(interpretation.get("provider") or "unknown")
+    model = str(interpretation.get("model") or "—")
+    if provider != "openai_compatible" or not (prompt_tokens or completion_tokens):
+        return {
+            "provider": provider, "model": model,
+            "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
+            "usd": 0.0 if provider != "openai_compatible" else None,
+            "priced": provider != "openai_compatible",
+        }
+    usd = (
+        prompt_tokens * OPENAI_INPUT_USD_PER_1M
+        + completion_tokens * OPENAI_OUTPUT_USD_PER_1M
+    ) / 1_000_000
+    return {
+        "provider": provider, "model": model,
+        "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
+        "usd": usd, "priced": True,
+    }
+
+
+def _money(value: float) -> str:
+    label = f"${value:.4f}" if 0 < abs(value) < 0.01 else f"${value:.2f}"
+    if USD_PLN_RATE > 0:
+        pln = value * USD_PLN_RATE
+        label += (
+            f" / {pln:.4f} zł" if 0 < abs(pln) < 0.01 else f" / {pln:.2f} zł"
+        )
+    return label
+
+
+def _render_cost_center(quality: dict[str, Any], current_response: dict[str, Any]) -> None:
+    primary = dict(quality.get("primary") or {})
+    remote = dict(quality.get("remote") or {})
+    interactions = dict(primary.get("interactions") or {})
+    current_cost = _query_cost(current_response) if current_response else {
+        "provider": "—", "model": "—", "prompt_tokens": 0,
+        "completion_tokens": 0, "usd": None, "priced": False,
+    }
+
+    st.subheader("Koszty i wykorzystanie usług")
+    st.caption(
+        "Zmierzone dane są oznaczone jako pomiar. Wartości planów i transferu "
+        "wpisane przez `.env` są oznaczone jako konfiguracja, a nie faktura."
+    )
+    if primary.get("updated_at"):
+        st.caption(f"Agregat Object Store zaktualizowany: {_local_time(primary['updated_at'])}")
+    openai_tab, langfuse_tab, digitalocean_tab, summary_tab = st.tabs([
+        "🤖 OpenAI", "🔭 Langfuse", "☁️ DigitalOcean", "Σ Podsumowanie",
+    ])
+
+    with openai_tab:
+        prompt_total = int(interactions.get("prompt_tokens") or 0)
+        completion_total = int(interactions.get("completion_tokens") or 0)
+        tokenized = int(interactions.get("tokenized_interactions") or 0)
+        measured_cost = (
+            prompt_total * OPENAI_INPUT_USD_PER_1M
+            + completion_total * OPENAI_OUTPUT_USD_PER_1M
+        ) / 1_000_000
+        cards = st.columns(5)
+        cards[0].metric("Zapytania zapisane", int(interactions.get("count") or 0))
+        cards[1].metric("Z licznikiem tokenów", tokenized)
+        cards[2].metric("Tokeny wejściowe", f"{prompt_total:,}".replace(",", " "))
+        cards[3].metric("Tokeny wyjściowe", f"{completion_total:,}".replace(",", " "))
+        cards[4].metric("Koszt zapisanej historii", _money(measured_cost))
+        if (
+            current_cost.get("prompt_tokens")
+            and not int(interactions.get("tokenized_interactions") or 0)
+        ):
+            st.warning(
+                "Bieżąca odpowiedź zawiera tokeny, ale odczytany agregat historii "
+                "jeszcze ich nie zawiera. Użyj przycisku odświeżenia; jeżeli stan "
+                "pozostanie bez zmian, API zapisuje do innego prefixu Object Store."
+            )
+        if current_response:
+            current_columns = st.columns(4)
+            current_columns[0].metric("Bieżący model", current_cost["model"])
+            current_columns[1].metric("Wejście", current_cost["prompt_tokens"])
+            current_columns[2].metric("Wyjście", current_cost["completion_tokens"])
+            current_columns[3].metric(
+                "Koszt bieżącego zapytania",
+                _money(float(current_cost["usd"]))
+                if current_cost["usd"] is not None else "brak usage",
+            )
+        daily_rows = []
+        for day, row in sorted(dict(interactions.get("daily") or {}).items()):
+            prompt = int(row.get("prompt_tokens") or 0)
+            completion = int(row.get("completion_tokens") or 0)
+            daily_rows.append({
+                "Data": day,
+                "Zapytania": int(row.get("count") or 0),
+                "Tokeny wejściowe": prompt,
+                "Tokeny wyjściowe": completion,
+                "Koszt USD": (
+                    prompt * OPENAI_INPUT_USD_PER_1M
+                    + completion * OPENAI_OUTPUT_USD_PER_1M
+                ) / 1_000_000,
+            })
+        if daily_rows:
+            daily = pd.DataFrame(daily_rows)
+            token_figure = go.Figure()
+            token_figure.add_bar(
+                x=daily["Data"], y=daily["Tokeny wejściowe"], name="Wejście",
+                marker_color="#4f7cff",
+            )
+            token_figure.add_bar(
+                x=daily["Data"], y=daily["Tokeny wyjściowe"], name="Wyjście",
+                marker_color="#43e0c0",
+            )
+            token_figure.add_scatter(
+                x=daily["Data"], y=daily["Koszt USD"], name="Koszt USD",
+                yaxis="y2", mode="lines+markers", line=dict(color="#ffbf69", width=3),
+            )
+            token_figure.update_layout(
+                title="Historia tokenów i kosztu OpenAI", barmode="stack",
+                yaxis_title="Tokeny",
+                yaxis2=dict(title="USD", overlaying="y", side="right"),
+                legend=dict(orientation="h"),
+            )
+            st.plotly_chart(token_figure, width="stretch", config=PLOTLY_CHART_CONFIG)
+            st.dataframe(daily, hide_index=True, width="stretch")
+        else:
+            st.info("Historia tokenów pojawi się po przebudowie agregatu i nowych zapytaniach.")
+
+    with langfuse_tab:
+        feedback_count = int(primary.get("count") or 0)
+        imported = int(dict(primary.get("feedback_labels") or {}).get("imported_from_langfuse") or 0)
+        langfuse_cards = st.columns(4)
+        langfuse_cards[0].metric("Plan (konfiguracja)", LANGFUSE_PLAN_NAME)
+        langfuse_cards[1].metric("Koszt miesięczny", _money(LANGFUSE_MONTHLY_USD))
+        langfuse_cards[2].metric("Oceny we własnym Store", feedback_count)
+        langfuse_cards[3].metric("Zaimportowane z Langfuse", imported)
+        st.metric(
+            "Rekordy widoczne zdalnie w Langfuse",
+            int(remote.get("count") or 0) if remote.get("status") == "ok" else "niedostępne",
+        )
+        st.caption(
+            "Liczba rekordów zdalnych nie jest liczbą wszystkich requestów HTTP do "
+            "Langfuse. Pełny licznik wywołań wymaga osobnej telemetrii transportu."
+        )
+
+    with digitalocean_tab:
+        do_cards = st.columns(5)
+        do_cards[0].metric("App Platform / mies.", _money(DIGITALOCEAN_APP_MONTHLY_USD))
+        do_cards[1].metric("Spaces / mies.", _money(DIGITALOCEAN_SPACES_MONTHLY_USD))
+        do_cards[2].metric("Spaces zajętość", f"{DIGITALOCEAN_SPACES_STORAGE_USED_GB:.2f} GB")
+        do_cards[3].metric("Transfer Spaces", f"{DIGITALOCEAN_SPACES_TRANSFER_USED_GB:.2f} GB")
+        do_cards[4].metric("Transfer aplikacji", f"{DIGITALOCEAN_APP_TRANSFER_USED_GB:.2f} GB")
+        if DIGITALOCEAN_USAGE_SOURCE == "not_connected":
+            st.warning(
+                "Metryki użycia DigitalOcean nie są jeszcze połączone z API DigitalOcean. "
+                "Wartości 0 GB oznaczają brak pomiaru, a nie brak transferu."
+            )
+        else:
+            st.success(f"Źródło metryk DigitalOcean: {DIGITALOCEAN_USAGE_SOURCE}")
+        usage_figure = go.Figure(go.Bar(
+            x=["Zajętość Spaces", "Transfer Spaces", "Transfer aplikacji"],
+            y=[
+                DIGITALOCEAN_SPACES_STORAGE_USED_GB,
+                DIGITALOCEAN_SPACES_TRANSFER_USED_GB,
+                DIGITALOCEAN_APP_TRANSFER_USED_GB,
+            ],
+            marker_color=["#43e0c0", "#4f7cff", "#ffbf69"],
+            texttemplate="%{y:.2f} GB", textposition="outside",
+        ))
+        usage_figure.update_layout(title="Wykorzystanie DigitalOcean", yaxis_title="GB")
+        st.plotly_chart(usage_figure, width="stretch", config=PLOTLY_CHART_CONFIG)
+
+    with summary_tab:
+        prompt_total = int(interactions.get("prompt_tokens") or 0)
+        completion_total = int(interactions.get("completion_tokens") or 0)
+        tokenized = int(interactions.get("tokenized_interactions") or 0)
+        measured_openai = (
+            prompt_total * OPENAI_INPUT_USD_PER_1M
+            + completion_total * OPENAI_OUTPUT_USD_PER_1M
+        ) / 1_000_000
+        average_openai = measured_openai / tokenized if tokenized else None
+        # Prefer the average of all recorded, tokenized requests.  Immediately
+        # after the first request the aggregate can still lag behind, so the
+        # current request is a useful, explicitly labelled fallback.
+        projection_basis = "średnia zapisanych zapytań"
+        if average_openai is None and current_cost.get("usd") is not None:
+            average_openai = float(current_cost["usd"])
+            projection_basis = "bieżące zapytanie (agregat jeszcze pusty)"
+        projected_openai = (
+            average_openai * EXPECTED_MONTHLY_QUERIES
+            if average_openai is not None else None
+        )
+        fixed_do = (
+            DIGITALOCEAN_APP_MONTHLY_USD + DIGITALOCEAN_SPACES_MONTHLY_USD
+            + DIGITALOCEAN_OVERAGE_MONTHLY_USD
+        )
+        rows = [
+            {
+                "Usługa": "OpenAI",
+                "Koszt zmierzony USD": measured_openai,
+                "Prognoza USD / miesiąc": projected_openai,
+                "Podstawa": (
+                    f"{projection_basis}; {EXPECTED_MONTHLY_QUERIES} zapytań/mies."
+                    if projected_openai is not None else "brak zapisanych tokenów"
+                ),
+            },
+            {
+                "Usługa": "Langfuse",
+                "Koszt zmierzony USD": None,
+                "Prognoza USD / miesiąc": LANGFUSE_MONTHLY_USD,
+                "Podstawa": f"konfiguracja planu: {LANGFUSE_PLAN_NAME}",
+            },
+            {
+                "Usługa": "DigitalOcean",
+                "Koszt zmierzony USD": None,
+                "Prognoza USD / miesiąc": fixed_do,
+                "Podstawa": "konfiguracja App Platform + Spaces + nadwyżki",
+            },
+        ]
+        frame = pd.DataFrame(rows)
+        st.dataframe(frame, hide_index=True, width="stretch")
+        known = frame["Prognoza USD / miesiąc"].dropna().sum()
+        summary_cards = st.columns(3)
+        summary_cards[0].metric(
+            "OpenAI — koszt zapisanej historii", _money(measured_openai)
+        )
+        summary_cards[1].metric(
+            "OpenAI — prognoza miesięczna",
+            _money(float(projected_openai)) if projected_openai is not None else "brak danych",
+        )
+        summary_cards[2].metric(
+            "Suma prognozowana / miesiąc", _money(float(known))
+        )
+        st.caption(
+            "Prognoza OpenAI = średni koszt zapisanego zapytania z tokenami × "
+            f"{EXPECTED_MONTHLY_QUERIES} zapytań/mies. Koszty Langfuse i "
+            "DigitalOcean pochodzą z konfiguracji i nie są fakturą."
+        )
 
 # deck.gl buduje własny atlas znaków. Jawny zestaw zapobiega zastępowaniu
 # polskich liter pustymi kwadratami na warstwach TextLayer.
@@ -105,6 +383,65 @@ QUERY_PARAMETER_OPTIONS = (
     "precipitation_mm",
 )
 
+
+def _manifest_parameter_options(manifest: dict[str, Any]) -> tuple[str, ...]:
+    published = [
+        str(value)
+        for value in manifest.get("parameters", [])
+        if str(value).strip()
+    ]
+    if not published:
+        published = [
+            str(row.get("parameter"))
+            for row in manifest.get("surfaces", [])
+            if row.get("parameter")
+        ]
+    published_set = set(published)
+    ordered = [
+        parameter
+        for parameter in QUERY_PARAMETER_OPTIONS
+        if parameter in published_set
+    ]
+    ordered.extend(sorted(published_set - set(ordered), key=str.casefold))
+    return tuple(ordered) or QUERY_PARAMETER_OPTIONS
+
+
+def _manifest_parameter_quality(
+    manifest: dict[str, Any], parameter: str
+) -> dict[str, Any]:
+    entries = [
+        row
+        for row in manifest.get("surfaces", [])
+        if str(row.get("parameter")) == str(parameter)
+    ]
+    metadata_rows = [dict(row.get("metadata") or {}) for row in entries]
+    experimental = any(
+        bool(row.get("experimental"))
+        or str(row.get("quality_status") or "").lower() == "experimental"
+        for row in metadata_rows
+    )
+    reasons = next(
+        (
+            list(row.get("experimental_reason") or [])
+            for row in metadata_rows
+            if row.get("experimental_reason")
+        ),
+        [],
+    )
+    return {
+        "experimental": experimental,
+        "quality_status": "experimental" if experimental else "accepted",
+        "experimental_reason": reasons,
+    }
+
+
+def _parameter_option_label(
+    parameter: str, manifest: dict[str, Any]
+) -> str:
+    label = str(_parameter_meta(parameter)["label"])
+    quality = _manifest_parameter_quality(manifest, parameter)
+    return f"🧪 {label} — EKSPERYMENTALNY" if quality["experimental"] else label
+
 st.set_page_config(
     page_title=f"{CUSTOMER_NAME} — prognoza godzinowa",
     page_icon="🌍",
@@ -153,6 +490,10 @@ st.markdown(
 [data-testid="stMetric"] { background: rgba(8, 24, 40, .78); border: 1px solid var(--line);
   border-radius: 16px; padding: .7rem .9rem; }
 [data-testid="stTabs"] button { font-weight: 700; }
+[data-testid="stDataFrame"] { overflow-x: auto !important; max-width: 100%; }
+[data-testid="stDataFrame"] [role="gridcell"] {
+  white-space: normal !important; overflow-wrap: anywhere !important;
+}
 .small-note { color: var(--muted); font-size: .82rem; }
 </style>
 """,
@@ -249,6 +590,11 @@ def load_models() -> dict[str, Any]:
 @st.cache_data(ttl=60, show_spinner=False)
 def load_model_comparison() -> dict[str, Any]:
     return dict(_request_json("models/compare"))
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_quality_overview() -> dict[str, Any]:
+    return dict(_request_json("quality/overview"))
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -1143,7 +1489,7 @@ def _timeline_range_control(
         focus = available[len(available) // 2]
     focus = min(max(focus, available[0]), available[-1])
 
-    half_window = pd.Timedelta(hours=DEFAULT_TIMELINE_WINDOW_HOURS / 2)
+    half_window = pd.Timedelta(int(DEFAULT_TIMELINE_WINDOW_HOURS * 30), unit="m")  # HF21_DASHBOARD_TIMEDELTA_EXPLICIT_UNIT_V2
     default_start = _floor_available_time(available, focus - half_window)
     default_end = _ceil_available_time(available, focus + half_window)
     if default_start >= default_end:
@@ -1668,6 +2014,13 @@ def _render_exact_point(result: dict[str, Any] | None, parameter: str, surface: 
     place = result.get("place") or {}
     station = result.get("station") or {}
     metadata = surface.get("metadata") or {}
+    experimental = bool(row.get("experimental") or metadata.get("experimental"))
+    if experimental:
+        st.warning(
+            "Wynik eksperymentalny — model nie przeszedł wszystkich miękkich "
+            "progów jakości. Aktywny model pozostaje dostępny, ale wynik należy "
+            "interpretować ostrożniej."
+        )
     contributions = row.get("station_contributions") or []
     nearest_contribution = min(
         (
@@ -1687,6 +2040,21 @@ def _render_exact_point(result: dict[str, Any] | None, parameter: str, surface: 
                     "punkt lokalizacji nadal jest prawidłowo pokazany."
                     if forecast_missing_for_parameter
                     else "Prognoza dostępna"
+                ),
+            ),
+            (
+                "Status jakości modelu",
+                "EKSPERYMENTALNY"
+                if experimental
+                else str(row.get("quality_status") or metadata.get("quality_status") or "accepted"),
+            ),
+            (
+                "Powód statusu eksperymentalnego",
+                json.dumps(
+                    row.get("experimental_reason")
+                    or metadata.get("experimental_reason")
+                    or [],
+                    ensure_ascii=False,
                 ),
             ),
             ("Punkt zapytania", place.get("name")),
@@ -1738,7 +2106,11 @@ def _render_exact_point(result: dict[str, Any] | None, parameter: str, surface: 
         ],
         columns=["Właściwość", "Wartość"],
     )
-    st.dataframe(table, hide_index=True, use_container_width=True)
+    # HF21_DASHBOARD_ARROW_VALUE_STRING: Arrow requires one stable type per column.
+    table.iloc[:, 1] = table.iloc[:, 1].map(
+        lambda value: "\u2014" if value is None else str(value)
+    )
+    st.dataframe(table, hide_index=True, width="stretch")
     if contributions:
         contribution_frame = pd.DataFrame(contributions).rename(
             columns={
@@ -1755,7 +2127,7 @@ def _render_exact_point(result: dict[str, Any] | None, parameter: str, surface: 
                 ["Stacja", "Odległość [km]", "Jakość q", "Udział", "Prognoza stacji"]
             ],
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
         graph = _station_influence_graph(
             contributions,
@@ -1779,7 +2151,7 @@ def _render_exact_point(result: dict[str, Any] | None, parameter: str, surface: 
             )
             st.plotly_chart(
                 graph,
-                use_container_width=True,
+                width="stretch",
                 config=PLOTLY_CHART_CONFIG,
             )
 
@@ -1808,8 +2180,17 @@ except Exception as exc:
     st.code(f"API: {API_URL}")
     st.stop()
 
-map_tab, model_tab, docs_tab = st.tabs(
-    ["🗺️ Mapa i prognoza", "🧠 Model i jakość", "📚 Jak to działa"]
+# Serving v2 is the source of truth. New targets such as NO2 or O3 become
+# selectable without another dashboard patch.
+QUERY_PARAMETER_OPTIONS = _manifest_parameter_options(manifest)
+
+map_tab, model_tab, cost_tab, docs_tab = st.tabs(
+    [
+        "🗺️ Mapa i prognoza",
+        "🧠 Modele, MLOps i oceny",
+        "💰 Koszty i wykorzystanie",
+        "📚 Jak to działa",
+    ]
 )
 
 with map_tab:
@@ -1842,7 +2223,7 @@ with map_tab:
             picker_map,
             key="hf21-exact-point-picker",
             height=440,
-            use_container_width=True,
+            width="stretch",
             returned_objects=["last_clicked"],
         )
         clicked_point = (picker_event or {}).get("last_clicked") or {}
@@ -1908,7 +2289,7 @@ with map_tab:
         submitted = st.form_submit_button(
             "Sprawdź",
             type="primary",
-            use_container_width=True,
+            width="stretch",
         )
 
     if submitted:
@@ -2040,6 +2421,31 @@ with map_tab:
                 ",".join(proposed_parameters),
             ]
         )
+        confirmation_defaults = {
+            "hf21_confirmation_name": (
+                reference_name if recommend_reference else candidate_name
+            ),
+            "hf21_confirmation_latitude": (
+                reference_latitude if recommend_reference else candidate_latitude
+            ),
+            "hf21_confirmation_longitude": (
+                reference_longitude if recommend_reference else candidate_longitude
+            ),
+            "hf21_confirmation_time": (
+                parser_time if recommend_parser_time else openai_time
+            ),
+            "hf21_confirmation_location_source": (
+                "confirmed_independent_reference"
+                if recommend_reference else "confirmed_openai_candidate"
+            ),
+            "hf21_confirmation_time_source": (
+                "confirmed_deterministic_parser"
+                if recommend_parser_time else "confirmed_openai_candidate"
+            ),
+            "hf21_confirmation_parameters": list(proposed_parameters),
+        }
+        for state_key, default_value in confirmation_defaults.items():
+            st.session_state.setdefault(state_key, default_value)
         if st.session_state.get("hf21_confirmation_token") != confirmation_token:
             st.session_state["hf21_confirmation_token"] = confirmation_token
             st.session_state["hf21_confirmation_name"] = (
@@ -2097,7 +2503,7 @@ with map_tab:
         review_map = folium.Map(
             location=[review_latitude, review_longitude],
             zoom_start=13,
-            tiles="CartoDB dark_matter",
+            tiles="OpenStreetMap",  # HF21_LOCATION_REVIEW_LIGHT_MAP
             control_scale=True,
         )
         folium.Marker(
@@ -2123,7 +2529,7 @@ with map_tab:
                 + hashlib.sha256(confirmation_token.encode("utf-8")).hexdigest()[:16]
             ),
             height=480,
-            use_container_width=True,
+            width="stretch",
             returned_objects=["last_clicked"],
         )
         review_click = (review_event or {}).get("last_clicked") or {}
@@ -2203,12 +2609,12 @@ with map_tab:
             st.dataframe(
                 pd.DataFrame(location_rows),
                 hide_index=True,
-                use_container_width=True,
+                width="stretch",
             )
 
             source_buttons = st.columns(2)
             with source_buttons[0]:
-                if st.button("Użyj propozycji OpenAI", use_container_width=True):
+                if st.button("Użyj propozycji OpenAI", width="stretch"):
                     st.session_state["hf21_confirmation_name"] = candidate_name
                     st.session_state["hf21_confirmation_latitude"] = candidate_latitude
                     st.session_state["hf21_confirmation_longitude"] = candidate_longitude
@@ -2218,7 +2624,7 @@ with map_tab:
                 if st.button(
                     f"Użyj punktu {reference_source}",
                     disabled=not reference_available,
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     st.session_state["hf21_confirmation_name"] = reference_name
                     st.session_state["hf21_confirmation_latitude"] = reference_latitude
@@ -2235,13 +2641,13 @@ with map_tab:
                 time_rows.append(
                     {"Źródło": "Deterministyczny parser czasu", "Termin ISO 8601": parser_time}
                 )
-            st.dataframe(pd.DataFrame(time_rows), hide_index=True, use_container_width=True)
+            st.dataframe(pd.DataFrame(time_rows), hide_index=True, width="stretch")
             if time_difference is not None:
                 st.caption(f"Różnica między parserami: {float(time_difference):.2f} min.")
 
             time_buttons = st.columns(2)
             with time_buttons[0]:
-                if st.button("Użyj czasu OpenAI", use_container_width=True):
+                if st.button("Użyj czasu OpenAI", width="stretch"):
                     st.session_state["hf21_confirmation_time"] = openai_time
                     st.session_state["hf21_confirmation_time_source"] = "confirmed_openai_candidate"
                     st.rerun()
@@ -2249,7 +2655,7 @@ with map_tab:
                 if st.button(
                     "Użyj czasu parsera kontrolnego",
                     disabled=not bool(parser_time),
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     st.session_state["hf21_confirmation_time"] = parser_time
                     st.session_state["hf21_confirmation_time_source"] = "confirmed_deterministic_parser"
@@ -2284,7 +2690,7 @@ with map_tab:
             st.multiselect(
                 "Parametry do obliczenia i wyświetlenia",
                 options=list(QUERY_PARAMETER_OPTIONS),
-                format_func=lambda value: _parameter_meta(value)["label"],
+                format_func=lambda value: _parameter_option_label(value, manifest),
                 key="hf21_confirmation_parameters",
                 help=(
                     "Zaznaczenie pochodzi z treści zapytania. Możesz je zmienić; "
@@ -2294,7 +2700,7 @@ with map_tab:
             confirmation_submit = st.form_submit_button(
                 "Zatwierdź dane i parametry — oblicz prognozę",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
             )
 
         if confirmation_submit:
@@ -2319,6 +2725,18 @@ with map_tab:
                                 "hf21_confirmation_time_source", "confirmed_user_edit"
                             ),
                             "parameters": confirmed_parameters,
+                            "parser_provider": (
+                                pending_result.get("interpretation") or {}
+                            ).get("provider"),
+                            "parser_model": (
+                                pending_result.get("interpretation") or {}
+                            ).get("model"),
+                            "parser_prompt_tokens": (
+                                pending_result.get("interpretation") or {}
+                            ).get("prompt_tokens"),
+                            "parser_completion_tokens": (
+                                pending_result.get("interpretation") or {}
+                            ).get("completion_tokens"),
                             "requested_view": str(
                                 pending_intent.get("requested_view") or "forecast"
                             ),
@@ -2329,6 +2747,10 @@ with map_tab:
                             payload=confirmed_payload,
                             timeout=QUERY_TIMEOUT_SECONDS,
                         )
+                        # /query stores the interaction before returning.  Drop
+                        # only the small FinOps cache so the next render sees it
+                        # immediately instead of showing the previous 60 s view.
+                        load_quality_overview.clear()
                         confirmed_result = _normalise_query_result(confirmed_result) or {}
                         returned_parameters = {
                             _ui_parameter_key(row.get("parameter"))
@@ -2367,7 +2789,7 @@ with map_tab:
                     except Exception as exc:
                         st.error(f"Nie udało się zatwierdzić danych: {exc}")
 
-        if st.button("Odrzuć propozycje i wróć do zapytania", use_container_width=True):
+        if st.button("Odrzuć propozycje i wróć do zapytania", width="stretch"):
             st.session_state.pop("pending_query_confirmation", None)
             st.session_state.pop("query_result", None)
             st.rerun()
@@ -2420,12 +2842,19 @@ with map_tab:
             "Warstwa",
             parameters,
             index=parameters.index(default_parameter),
-            format_func=lambda value: _parameter_meta(value)["label"],
+            format_func=lambda value: _parameter_option_label(value, manifest),
         )
     entries = _surface_entries(manifest, parameter)
     if not entries:
         st.warning(f"Brak powierzchni dla {parameter}.")
         st.stop()
+    selected_parameter_quality = _manifest_parameter_quality(manifest, parameter)
+    if selected_parameter_quality["experimental"]:
+        st.warning(
+            f"🧪 {_parameter_meta(parameter)['label']}: wynik eksperymentalny. "
+            "Aktywny model nie przeszedł wszystkich miękkich progów jakości; "
+            "wartość pozostaje dostępna, ale należy interpretować ją ostrożniej."
+        )
     requested_target = st.session_state.get("requested_target_time")
     entry_index = 0
     if requested_target:
@@ -2532,17 +2961,45 @@ with map_tab:
 
     if query_result:
         st.markdown(f"**Odpowiedź:** {query_result.get('summary', '')}")
+        query_cost = _query_cost(query_result)
+        st.caption(
+            "Szczegółowe tokeny, historia i koszty całego stosu są dostępne "
+            "w zakładce „Koszty i wykorzystanie”."
+        )
         for warning in query_result.get("warnings") or []:
             st.warning(warning)
 
-        with st.expander("Oceń jakość odpowiedzi", expanded=False):
+        with st.expander(
+            "Oceń tę odpowiedź — ogólnie lub według składników", expanded=False
+        ):
             feedback_key = str(query_result.get("request_id") or "current")
             score = st.slider(
-                "Ocena",
+                "Ocena ogólna",
                 min_value=0,
                 max_value=5,
                 value=4,
                 key=f"feedback-score-{feedback_key}",
+            )
+            st.caption(
+                "Każdy element można ocenić niezależnie. Te oceny dotyczą "
+                "gotowej odpowiedzi, a nie metryk MAE/RMSE modeli."
+            )
+            component_columns = st.columns(2)
+            location_score = component_columns[0].slider(
+                "Trafność lokalizacji", 0, 5, 4,
+                key=f"feedback-location-{feedback_key}",
+            )
+            time_score = component_columns[1].slider(
+                "Trafność daty i czasu", 0, 5, 4,
+                key=f"feedback-time-{feedback_key}",
+            )
+            parameter_score = component_columns[0].slider(
+                "Kompletność wymaganych parametrów", 0, 5, 4,
+                key=f"feedback-parameters-{feedback_key}",
+            )
+            clarity_score = component_columns[1].slider(
+                "Czytelność odpowiedzi", 0, 5, 4,
+                key=f"feedback-clarity-{feedback_key}",
             )
             comment = st.text_area(
                 "Komentarz (opcjonalny)",
@@ -2562,6 +3019,12 @@ with map_tab:
                             "question": query_result.get("question"),
                             "metadata": {
                                 "dashboard_version": APP_VERSION,
+                                "component_scores": {
+                                    "location": float(location_score) / 5.0,
+                                    "time": float(time_score) / 5.0,
+                                    "parameters": float(parameter_score) / 5.0,
+                                    "clarity": float(clarity_score) / 5.0,
+                                },
                                 "exact_time_match": (
                                     query_result.get("time_selection") or {}
                                 ).get("all_selected_values_exact"),
@@ -2595,12 +3058,12 @@ with map_tab:
             show_confidence=show_confidence,
             height_scale=height_scale,
         ),
-        use_container_width=True,
+        width="stretch",
         height=680,
     )
 
     st.caption(
-        f"Warstwa: {_parameter_meta(parameter)['label']} · "
+        f"Warstwa: {_parameter_option_label(parameter, manifest)} · "
         f"czas bazowy {_local_time(surface.get('origin_time'))} · "
         f"czas docelowy {_local_time(surface.get('target_time'))} · "
         f"horyzont +{surface.get('horizon_hours')} h · "
@@ -2712,313 +3175,638 @@ with map_tab:
             if pm_chart is not None:
                 chart_cols[0].plotly_chart(
                     pm_chart,
-                    use_container_width=True,
+                    width="stretch",
                     config=PLOTLY_CHART_CONFIG,
                 )
             if weather_chart is not None:
                 chart_cols[1].plotly_chart(
                     weather_chart,
-                    use_container_width=True,
+                    width="stretch",
                     config=PLOTLY_CHART_CONFIG,
                 )
         elif not st.session_state.get("timeline_error"):
             st.info("Brak godzinowego profilu dla wybranego dnia i punktu.")
 
-with model_tab:
-    st.subheader("Aktywne modele i otwarta platforma metod")
-    st.markdown(
-        "Pipeline korzysta z neutralnego interfejsu `ModelProvider`. "
-        "Scikit-learn jest zestawem metod wbudowanych, a nie zależnością architektury domenowej. "
-        "Nowe metody można podłączyć przez moduł, entry point albo import string."
-    )
+def _model_quality_number(value: Any) -> float | None:
     try:
-        model_payload = load_models()
-        model_rows = list(model_payload.get("models") or [])
+        number = float(value)
+        return number if math.isfinite(number) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _active_model_quality(
+    row: dict[str, Any], serving_manifest: dict[str, Any]
+) -> dict[str, Any]:
+    """Return an explicit quality decision; never expose a raw ``None`` in UI."""
+    card = dict(row.get("card") or {})
+    metrics = dict(card.get("metrics") or {})
+    target = str(row.get("target") or card.get("target") or "")
+    manifest_quality = _manifest_parameter_quality(serving_manifest, target)
+    explicit_status = str(
+        metrics.get("quality_status")
+        or card.get("quality_status")
+        or row.get("quality_status")
+        or ""
+    ).strip().lower()
+    explicit_experimental = bool(
+        metrics.get("experimental")
+        or card.get("experimental")
+        or row.get("experimental")
+    )
+    experimental = bool(
+        explicit_experimental
+        or explicit_status == "experimental"
+        or manifest_quality.get("experimental")
+    )
+    reasons = list(
+        metrics.get("experimental_reason")
+        or card.get("experimental_reason")
+        or row.get("experimental_reason")
+        or manifest_quality.get("experimental_reason")
+        or []
+    )
+    return {
+        "status": "experimental" if experimental else "accepted",
+        "label": "EKSPERYMENTALNY" if experimental else "ZATWIERDZONY",
+        "experimental": experimental,
+        "reasons": reasons,
+    }
+
+
+def _model_published_outputs(row: dict[str, Any]) -> list[str]:
+    target = str(row.get("target") or (row.get("card") or {}).get("target") or "")
+    outputs = [target] if target else []
+    # Jeden model hurdle ma część regresyjną i klasyfikacyjną, dlatego dostarcza
+    # dwa odrębne parametry kontraktu Serving v2.
+    if target == "precipitation_mm":
+        outputs.append("precipitation_probability")
+    return outputs
+
+
+def _candidate_frame(payload: dict[str, Any]) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for run in list(payload.get("candidate_runs") or []):
+        metrics = dict(run.get("metrics") or {})
+        params = dict(run.get("params") or {})
+        rows.append({
+            "Target": run.get("target") or params.get("target"),
+            "Model": run.get("provider") or params.get("provider") or "nieznany",
+            "Profil": run.get("profile") or params.get("profile"),
+            "Wybrany": bool(run.get("selected")),
+            "Status": metrics.get("quality_status") or run.get("status"),
+            "MAE": _model_quality_number(metrics.get("mae")),
+            "RMSE": _model_quality_number(metrics.get("rmse")),
+            "Bias": _model_quality_number(metrics.get("bias")),
+            "AUC": _model_quality_number(metrics.get("roc_auc")),
+            "Brier skill": _model_quality_number(
+                metrics.get("brier_skill_vs_climatology")
+            ),
+            "Poprawa vs persistence": _model_quality_number(
+                metrics.get("improvement_vs_persistence")
+            ),
+            "Dataset": params.get("dataset_id") or metrics.get("dataset_id"),
+            "Run ID": run.get("run_id"),
+            "Start": run.get("start_time"),
+        })
+    frame = pd.DataFrame(rows)
+    if not frame.empty and "MAE" in frame:
+        frame["Względny wynik"] = frame.groupby("Target")["MAE"].transform(
+            lambda series: series.min() / series.replace(0, pd.NA)
+        )
+    return frame
+
+
+def render_ml_quality_overview() -> None:
+    try:
+        active_payload = load_models()
+        comparison = load_model_comparison()
     except Exception as exc:
-        st.warning(f"Metadane modeli są niedostępne: {exc}")
-        model_rows = []
-    comparison_payload: dict[str, Any] = {}
+        st.warning(f"Analityka modeli jest chwilowo niedostępna: {exc}")
+        return
+    active = list(active_payload.get("models") or [])
+    candidates = _candidate_frame(comparison)
+    targets = sorted({str(value) for value in candidates.get("Target", []) if value})
+    # Serving v2, a nie karta modelu, jest źródłem prawdy o publicznych
+    # parametrach.  Karty używają pola ``target``; poprzedni odczyt nieistniejącego
+    # ``parameter`` powodował błędny licznik równy zero.
+    predicted_outputs = set(_manifest_parameter_options(manifest))
+    selected_count = int(candidates.get("Wybrany", pd.Series(dtype=bool)).sum())
+    kpi = st.columns(4)
+    kpi[0].metric("Aktywne artefakty modeli", len(active))
+    kpi[1].metric("Kandydaci MLflow", len(candidates))
+    kpi[2].metric("Publikowane parametry", len(predicted_outputs))
+    kpi[3].metric("Zwycięzcy w historii", selected_count)
 
-    if not model_rows:
-        st.info(
-            "Nie opublikowano jeszcze aktywnych modeli godzinowych. "
-            "Po włączeniu wersji 1.7 uruchom trening i publikację dokumentacji."
+    quality_rows: list[dict[str, Any]] = []
+    active_by_target = {str(row.get("target")): row for row in active}
+    for parameter in _manifest_parameter_options(manifest):
+        model_target = (
+            "precipitation_mm"
+            if parameter == "precipitation_probability"
+            else parameter
         )
+        model = active_by_target.get(model_target) or {}
+        parameter_quality = _manifest_parameter_quality(manifest, parameter)
+        status = "experimental" if parameter_quality["experimental"] else "accepted"
+        quality_rows.append({
+            "Cel publikacji": parameter,
+            "Decyzja": "EKSPERYMENTALNY" if status == "experimental" else "ZATWIERDZONY",
+            "Model źródłowy": model_target,
+            "Metoda": model.get("provider") or "—",
+            "Sposób": (
+                "wyjście klasyfikacyjne modelu hurdle"
+                if parameter == "precipitation_probability"
+                else "bezpośrednie wyjście modelu"
+            ),
+            "Powód / uwagi": "; ".join(parameter_quality["experimental_reason"]) or "—",
+        })
+    approved_targets = [
+        row["Cel publikacji"] for row in quality_rows if row["Decyzja"] == "ZATWIERDZONY"
+    ]
+    experimental_targets = [
+        row["Cel publikacji"] for row in quality_rows if row["Decyzja"] == "EKSPERYMENTALNY"
+    ]
+    st.success("Zatwierdzone cele Serving v2: " + (", ".join(approved_targets) or "brak"))
+    if experimental_targets:
+        st.warning("Eksperymentalne cele Serving v2: " + ", ".join(experimental_targets))
     else:
-        summary_rows: list[dict[str, Any]] = []
-        for row in model_rows:
-            card = row.get("card") or {}
-            metrics = card.get("metrics") or {}
-            summary_rows.append(
-                {
-                    "Cel": row.get("target"),
-                    "Provider": row.get("provider"),
-                    "Wersja": row.get("model_version"),
-                    "Aktywowany": _local_time(row.get("activated_at")),
-                    "MAE": metrics.get("mae"),
-                    "RMSE": metrics.get("rmse"),
-                    "Status bootstrap": bool(metrics.get("bootstrap")),
-                    "Początek danych": _local_time(card.get("training_data_start")),
-                    "Koniec danych": _local_time(card.get("training_data_end")),
-                }
-            )
-        active_model_frame = pd.DataFrame(summary_rows)
-        st.dataframe(active_model_frame, hide_index=True, use_container_width=True)
-
-        active_metric_columns = [
-            column
-            for column in ("MAE", "RMSE")
-            if column in active_model_frame.columns
-            and active_model_frame[column].notna().any()
-        ]
-        if active_metric_columns:
-            active_metric_figure = go.Figure()
-            active_chart_rows = active_model_frame.copy()
-            active_chart_rows["Model"] = (
-                active_chart_rows["Cel"].astype(str)
-                + " · "
-                + active_chart_rows["Provider"].astype(str)
-            )
-            for metric_name in active_metric_columns:
-                active_metric_figure.add_bar(
-                    name=metric_name,
-                    x=active_chart_rows["Model"],
-                    y=active_chart_rows[metric_name],
-                )
-            active_metric_figure.update_layout(
-                barmode="group",
-                title="Jakość aktywnych modeli",
-                xaxis_title="Cel · metoda",
-                yaxis_title="Błąd (mniej = lepiej)",
-                legend_title="Metryka",
-            )
-            st.plotly_chart(
-                active_metric_figure,
-                use_container_width=True,
-                config=PLOTLY_CHART_CONFIG,
-            )
-        else:
-            st.warning(
-                "Aktywne modele nie mają opublikowanych metryk MAE/RMSE. "
-                "Wyeksportuj lokalny artefakt porównania modeli."
-            )
-
-        try:
-            comparison_payload = load_model_comparison()
-            comparison_models = list(comparison_payload.get("models") or [])
-        except Exception:
-            comparison_payload = {}
-            comparison_models = []
-
-        if comparison_models:
-            st.markdown("### Aktywne i historyczne wersje modeli")
-            comparison_rows: list[dict[str, Any]] = []
-            for item in comparison_models:
-                metrics = item.get("metrics") or {}
-                mlflow = item.get("mlflow") or {}
-                comparison_rows.append(
-                    {
-                        "Cel": item.get("target"),
-                        "Provider": item.get("provider"),
-                        "Wersja": item.get("version"),
-                        "Aktywny": bool(item.get("active")),
-                        "Status jakości": metrics.get("quality_status"),
-                        "MAE": metrics.get("mae"),
-                        "RMSE": metrics.get("rmse"),
-                        "Bias": metrics.get("bias"),
-                        "Poprawa vs persistence": metrics.get(
-                            "improvement_vs_persistence"
-                        ),
-                        "Dataset": metrics.get("dataset_id"),
-                        "MLflow run": mlflow.get("run_id"),
-                    }
-                )
-            comparison_frame = pd.DataFrame(comparison_rows)
-            st.dataframe(
-                comparison_frame, hide_index=True, use_container_width=True
-            )
-
-            # HF21_MODEL_COMPARISON_CHARTS_V2
-            metric_columns = [
-                column for column in ("MAE", "RMSE", "Bias")
-                if column in comparison_frame.columns
-                and comparison_frame[column].notna().any()
-            ]
-            if metric_columns:
-                metric_figure = go.Figure()
-                chart_rows = comparison_frame.copy()
-                chart_rows["Model"] = (
-                    chart_rows["Cel"].astype(str)
-                    + " · "
-                    + chart_rows["Provider"].astype(str)
-                    + chart_rows["Aktywny"].map(lambda value: " · aktywny" if value else "")
-                )
-                for metric_name in metric_columns:
-                    metric_figure.add_bar(
-                        name=metric_name,
-                        x=chart_rows["Model"],
-                        y=chart_rows[metric_name],
-                    )
-                metric_figure.update_layout(
-                    barmode="group",
-                    title="Porównanie jakości aktywnych i historycznych modeli",
-                    xaxis_title="Cel · provider",
-                    yaxis_title="Wartość metryki (mniej = lepiej dla MAE/RMSE)",
-                    legend_title="Metryka",
-                )
-                st.plotly_chart(
-                    metric_figure,
-                    use_container_width=True,
-                    config=PLOTLY_CHART_CONFIG,
-                )
-
-            improvement_column = "Poprawa vs persistence"
-            if (
-                improvement_column in comparison_frame.columns
-                and comparison_frame[improvement_column].notna().any()
-            ):
-                improvement_rows = comparison_frame.dropna(subset=[improvement_column]).copy()
-                improvement_rows["Model"] = (
-                    improvement_rows["Cel"].astype(str)
-                    + " · "
-                    + improvement_rows["Provider"].astype(str)
-                )
-                improvement_figure = go.Figure(
-                    go.Bar(
-                        x=improvement_rows["Model"],
-                        y=improvement_rows[improvement_column],
-                        marker_color=[
-                            "#43e0c0" if float(value) >= 0 else "#ff6b6b"
-                            for value in improvement_rows[improvement_column]
-                        ],
-                    )
-                )
-                improvement_figure.update_layout(
-                    title="Poprawa względem prognozy persistence",
-                    xaxis_title="Cel · provider",
-                    yaxis_title="Poprawa",
-                )
-                st.plotly_chart(
-                    improvement_figure,
-                    use_container_width=True,
-                    config=PLOTLY_CHART_CONFIG,
-                )
-
-        candidate_runs = list(comparison_payload.get("candidate_runs") or [])
-        if candidate_runs:
-            st.markdown("### Kandydaci z eksperymentów MLflow")
-            candidate_rows: list[dict[str, Any]] = []
-            for run in candidate_runs:
-                metrics = run.get("metrics") or {}
-                params = run.get("params") or {}
-                candidate_rows.append(
-                    {
-                        "Cel": run.get("target"),
-                        "Provider": run.get("provider"),
-                        "Profil": run.get("profile"),
-                        "Wybrany": bool(run.get("selected")),
-                        "MAE": metrics.get("mae"),
-                        "RMSE": metrics.get("rmse"),
-                        "Bias": metrics.get("bias"),
-                        "Brier": metrics.get("brier"),
-                        "Dataset": params.get("dataset_id"),
-                        "Run ID": run.get("run_id"),
-                    }
-                )
-            candidate_frame = pd.DataFrame(candidate_rows)
-            st.dataframe(
-                candidate_frame, hide_index=True, use_container_width=True
-            )
-            chart_frame = candidate_frame.dropna(
-                subset=["Cel", "Provider", "MAE"]
-            )
-            if not chart_frame.empty:
-                figure = go.Figure()
-                for target, subset in chart_frame.groupby("Cel"):
-                    figure.add_bar(
-                        name=str(target),
-                        x=subset["Provider"].astype(str),
-                        y=subset["MAE"],
-                    )
-                figure.update_layout(
-                    barmode="group",
-                    title="MAE kandydatów zarejestrowanych w MLflow",
-                    xaxis_title="Provider",
-                    yaxis_title="MAE",
-                    legend_title="Cel",
-                )
-                st.plotly_chart(
-                    figure,
-                    use_container_width=True,
-                    config=PLOTLY_CHART_CONFIG,
-                )
-
-        if comparison_payload.get("tracking_error"):
-            st.caption(
-                "MLflow jest chwilowo niedostępny; pokazano zapisany artefakt "
-                "porównawczy. " + str(comparison_payload["tracking_error"])
-            )
-        mlflow_url = comparison_payload.get("ui_url") or comparison_payload.get(
-            "mlflow_ui_url"
-        )
-        if mlflow_url:
-            st.link_button("Otwórz MLflow", str(mlflow_url))
-
-        for row in model_rows:
-            with st.expander(
-                f"{row.get('target')} · {row.get('provider')} · {row.get('model_version')}"
-            ):
-                st.json(row.get("card") or row, expanded=False)
-
-    st.markdown("### Rejestrowanie jakości: MLflow i Langfuse")
-    tracking_cols = st.columns(3)
-    mlflow_url = comparison_payload.get("ui_url") or comparison_payload.get(
-        "mlflow_ui_url"
-    )
-    tracking_cols[0].metric(
-        "MLflow",
-        "skonfigurowany" if mlflow_url else "lokalny / wyłączony",
-    )
-    tracking_cols[1].metric(
-        "Langfuse",
-        str(health.get("observability_backend") or "none"),
-    )
-    tracking_cols[2].metric(
-        "Runy kandydatów",
-        len(list(comparison_payload.get("candidate_runs") or [])),
-    )
-    if mlflow_url:
-        st.link_button("Otwórz lokalny MLflow", str(mlflow_url))
-    else:
+        st.info("Eksperymentalne cele Serving v2: brak.")
+    with st.expander("Decyzje publikacyjne według celu", expanded=True):
+        st.dataframe(pd.DataFrame(quality_rows), hide_index=True, width="stretch")
         st.caption(
-            "MLflow można uruchomić lokalnie na porcie 5000. Wcześniej "
-            "wytrenowane modele pozostają w tabeli porównawczej, ale jako runy "
-            "MLflow pojawią się dopiero po kolejnym treningu z włączonym trackingiem."
-        )
-    if str(health.get("observability_backend") or "none") in {"none", "noop"}:
-        st.info(
-            "Langfuse jest przygotowany kontraktowo, lecz nadal wyłączony. "
-            "Oceny odpowiedzi pozostają w lokalnym JSONL i nic nie jest wysyłane "
-            "do zewnętrznej usługi."
+            f"{len(active)} artefakty modeli dostarczają {len(predicted_outputs)} "
+            "parametrów. precipitation_probability jest osobnym wyjściem "
+            "klasyfikacyjnym modelu precipitation_mm, a nie piątym artefaktem."
         )
 
-    st.markdown("### Co można podłączyć")
-    st.markdown(
-        """
-- regresję liniową, ridge, Huber i regresję wielomianową ograniczoną do bazy czasu;
-- XGBoost, LightGBM, CatBoost;
-- GAM, splajny, modele probabilistyczne;
-- MLP, LSTM, TCN, Transformer czasowy;
-- model grafowy stacji;
-- własny model firmowy, o ile implementuje kontrakt `fit/predict/describe`.
-"""
+    ranking_tab, active_tab, answer_tab, history_tab = st.tabs([
+        "🏆 Ranking i zwycięzcy",
+        "✅ Aktywne modele",
+        "💬 Jakość odpowiedzi",
+        "🧾 Historia i techniczne",
+    ])
+    with ranking_tab:
+        if candidates.empty:
+            st.info("Brak runów kandydatów w opublikowanym artefakcie MLflow.")
+        else:
+            chosen_target = st.selectbox(
+                "Porównywany parametr", targets, key="model_ranking_target"
+            )
+            subset = candidates[candidates["Target"].astype(str) == chosen_target].copy()
+            available_metrics = [
+                metric for metric in (
+                    "MAE", "RMSE", "Bias", "Poprawa vs persistence", "AUC", "Brier skill"
+                ) if metric in subset and subset[metric].notna().any()
+            ]
+            metric = st.selectbox(
+                "Metryka rankingu", available_metrics or ["MAE"],
+                key="model_ranking_metric",
+            )
+            lower_is_better = metric in {"MAE", "RMSE"}
+            chart = subset.dropna(subset=[metric]).sort_values(
+                metric, ascending=lower_is_better
+            )
+            chart["Etykieta"] = chart["Model"].astype(str) + chart["Wybrany"].map(
+                lambda selected: " ★" if selected else ""
+            )
+            colors = [
+                "#43e0c0" if selected else "#4f7cff"
+                for selected in chart["Wybrany"]
+            ]
+            figure = go.Figure(go.Bar(
+                x=chart[metric], y=chart["Etykieta"], orientation="h",
+                marker_color=colors,
+                customdata=chart[["Profil", "Status", "Run ID"]].fillna("—"),
+                hovertemplate=(
+                    "%{y}<br>" + metric + ": %{x:.4f}<br>Profil: %{customdata[0]}"
+                    "<br>Status: %{customdata[1]}<br>Run: %{customdata[2]}<extra></extra>"
+                ),
+            ))
+            figure.update_layout(
+                title=f"{chosen_target}: {metric} — {'mniej' if lower_is_better else 'więcej'} = lepiej",
+                xaxis_title=metric, yaxis_title="", height=max(360, 48 * len(chart)),
+                margin=dict(l=20, r=20, t=70, b=30),
+            )
+            st.plotly_chart(figure, width="stretch", config=PLOTLY_CHART_CONFIG)
+
+            cross = candidates.dropna(subset=["Względny wynik"]).copy()
+            if not cross.empty:
+                cross_figure = go.Figure()
+                for target, rows in cross.groupby("Target"):
+                    cross_figure.add_box(
+                        name=str(target), y=rows["Względny wynik"], boxpoints="all",
+                        text=rows["Model"], jitter=0.25, pointpos=0,
+                    )
+                cross_figure.update_layout(
+                    title="Względna jakość kandydatów w obrębie każdego parametru",
+                    yaxis_title="najlepsze MAE / MAE modelu (1,0 = najlepszy)",
+                    xaxis_title="Parametr",
+                )
+                st.plotly_chart(
+                    cross_figure, width="stretch", config=PLOTLY_CHART_CONFIG
+                )
+
+            visible = [
+                "Target", "Model", "Profil", "Wybrany", "Status", "MAE", "RMSE",
+                "Bias", "AUC", "Brier skill", "Poprawa vs persistence", "Dataset", "Run ID"
+            ]
+            st.dataframe(
+                subset[[column for column in visible if column in subset]],
+                hide_index=True, width="stretch",
+            )
+            diagnostic_columns = st.columns(2)
+            if subset["MAE"].notna().any() and subset["RMSE"].notna().any():
+                scatter_rows = subset.dropna(subset=["MAE", "RMSE"]).copy()
+                scatter_figure = go.Figure()
+                for selected, rows in scatter_rows.groupby("Wybrany"):
+                    scatter_figure.add_scatter(
+                        x=rows["MAE"], y=rows["RMSE"], mode="markers+text",
+                        name="Wybrany" if selected else "Kandydat",
+                        text=rows["Model"], textposition="top center",
+                        marker=dict(
+                            size=16 if selected else 10,
+                            color="#43e0c0" if selected else "#4f7cff",
+                            line=dict(width=1, color="#ffffff"),
+                        ),
+                        customdata=rows[["Profil", "Bias", "Run ID"]].fillna("—"),
+                        hovertemplate=(
+                            "%{text}<br>MAE: %{x:.4f}<br>RMSE: %{y:.4f}"
+                            "<br>Profil: %{customdata[0]}<br>Bias: %{customdata[1]}"
+                            "<br>Run: %{customdata[2]}<extra></extra>"
+                        ),
+                    )
+                scatter_figure.update_layout(
+                    title="Kompromis MAE–RMSE", xaxis_title="MAE (mniej = lepiej)",
+                    yaxis_title="RMSE (mniej = lepiej)", height=430,
+                )
+                diagnostic_columns[0].plotly_chart(
+                    scatter_figure, width="stretch",
+                    config=PLOTLY_CHART_CONFIG,
+                )
+            heat_metrics = [
+                name for name in ("MAE", "RMSE", "Bias", "AUC", "Brier skill")
+                if name in subset and subset[name].notna().any()
+            ]
+            if heat_metrics:
+                heat_rows = subset.copy()
+                heat_rows["Etykieta"] = (
+                    heat_rows["Model"].astype(str)
+                    + heat_rows["Wybrany"].map(lambda value: " ★" if value else "")
+                )
+                heat_values = []
+                for metric_name in heat_metrics:
+                    series = pd.to_numeric(heat_rows[metric_name], errors="coerce")
+                    minimum, maximum = series.min(), series.max()
+                    if pd.isna(minimum) or pd.isna(maximum) or maximum == minimum:
+                        normalised = series.map(lambda value: 1.0 if pd.notna(value) else None)
+                    elif metric_name in {"MAE", "RMSE"}:
+                        normalised = 1.0 - (series - minimum) / (maximum - minimum)
+                    else:
+                        normalised = (series - minimum) / (maximum - minimum)
+                    heat_values.append(normalised.tolist())
+                heat_figure = go.Figure(go.Heatmap(
+                    z=heat_values,
+                    x=heat_rows["Etykieta"], y=heat_metrics,
+                    colorscale=[[0, "#ff6b6b"], [0.5, "#ffbf69"], [1, "#43e0c0"]],
+                    zmin=0, zmax=1,
+                    colorbar=dict(title="wynik względny"),
+                    hovertemplate="%{y}<br>%{x}<br>Wynik względny: %{z:.2f}<extra></extra>",
+                ))
+                heat_figure.update_layout(
+                    title="Wielowymiarowy profil kandydatów", height=430,
+                    xaxis_tickangle=-25,
+                )
+                diagnostic_columns[1].plotly_chart(
+                    heat_figure, width="stretch",
+                    config=PLOTLY_CHART_CONFIG,
+                )
+
+    with active_tab:
+        cards: list[dict[str, Any]] = []
+        for row in active:
+            card = dict(row.get("card") or {})
+            metrics = dict(card.get("metrics") or {})
+            quality = _active_model_quality(row, manifest)
+            cards.append({
+                "Parametr": row.get("target"), "Metoda": row.get("provider"),
+                "Wersja": row.get("model_version"), "MAE": metrics.get("mae"),
+                "RMSE": metrics.get("rmse"), "Decyzja": quality["label"],
+                "Publikowane wyjścia": ", ".join(_model_published_outputs(row)),
+                "Dane od": _local_time(card.get("training_data_start")),
+                "Dane do": _local_time(card.get("training_data_end")),
+                "Aktywowany": _local_time(row.get("activated_at")),
+            })
+        active_frame = pd.DataFrame(cards)
+        if active_frame.empty:
+            st.info("Brak aktywnych kart modeli.")
+        else:
+            st.dataframe(active_frame, hide_index=True, width="stretch")
+            for row in active:
+                quality = _active_model_quality(row, manifest)
+                badge = "🧪" if quality["experimental"] else "✅"
+                with st.expander(
+                    f"{badge} {quality['label']} · {row.get('target')} · "
+                    f"{row.get('provider')} · {row.get('model_version')}"
+                ):
+                    st.markdown(
+                        "**Publikowane wyjścia:** "
+                        + ", ".join(_model_published_outputs(row))
+                    )
+                    if quality["reasons"]:
+                        st.warning("; ".join(quality["reasons"]))
+                    st.json(row.get("card") or row, expanded=False)
+
+    with answer_tab:
+        try:
+            quality = load_quality_overview()
+            primary = dict(quality.get("primary") or {})
+            remote = dict(quality.get("remote") or {})
+            local = dict(quality.get("local") or {})
+            source = primary if primary.get("status") == "ok" else local
+            score = _model_quality_number(source.get("average_score"))
+            positive = _model_quality_number(source.get("positive_fraction"))
+            cols = st.columns(4)
+            cols[0].metric(
+                "Źródło",
+                "nasz Object Store" if primary.get("status") == "ok" else "lokalny fallback",
+            )
+            cols[1].metric("Liczba ocen", int(source.get("count") or 0))
+            cols[2].metric("Średnia answer_quality", "—" if score is None else f"{score:.1%}")
+            cols[3].metric("Oceny pozytywne", "—" if positive is None else f"{positive:.1%}")
+            interactions = dict(primary.get("interactions") or {})
+            interaction_count = int(interactions.get("count") or 0)
+            if interaction_count:
+                st.markdown("#### Techniczna jakość gotowych odpowiedzi")
+                technical_rows = []
+                for label, key in (
+                    ("Komplet żądanych parametrów", "complete_parameter_answers"),
+                    ("Dokładny wskazany czas", "exact_time_answers"),
+                    ("Rozwiązane współrzędne", "resolved_point_answers"),
+                    ("Bez ostrzeżeń", "answers_without_warnings"),
+                    ("Zwrócono prognozę", "answers_with_forecasts"),
+                ):
+                    passed = int(interactions.get(key) or 0)
+                    technical_rows.append({
+                        "Kontrola": label,
+                        "Udział": passed / interaction_count,
+                        "Poprawne": passed,
+                        "Wszystkie": interaction_count,
+                    })
+                technical_frame = pd.DataFrame(technical_rows)
+                technical_figure = go.Figure(go.Bar(
+                    x=technical_frame["Udział"],
+                    y=technical_frame["Kontrola"],
+                    orientation="h",
+                    marker_color=[
+                        "#43e0c0" if value >= 0.9 else
+                        "#ffbf69" if value >= 0.7 else "#ff6b6b"
+                        for value in technical_frame["Udział"]
+                    ],
+                    text=[f"{value:.0%}" for value in technical_frame["Udział"]],
+                    textposition="outside",
+                    customdata=technical_frame[["Poprawne", "Wszystkie"]],
+                    hovertemplate=(
+                        "%{y}<br>%{x:.1%}<br>Poprawne: %{customdata[0]} / "
+                        "%{customdata[1]}<extra></extra>"
+                    ),
+                ))
+                technical_figure.update_layout(
+                    xaxis=dict(title="Udział odpowiedzi", range=[0, 1.08], tickformat=".0%"),
+                    yaxis_title="", height=390,
+                    margin=dict(l=20, r=55, t=25, b=40),
+                )
+                st.plotly_chart(
+                    technical_figure, width="stretch",
+                    config=PLOTLY_CHART_CONFIG,
+                )
+                details = st.columns(3)
+                details[0].metric("Przeanalizowane odpowiedzi", interaction_count)
+                details[1].metric(
+                    "Łączne ostrzeżenia", int(interactions.get("warning_total") or 0)
+                )
+                details[2].metric(
+                    "Zwrócone wartości prognoz",
+                    int(interactions.get("forecast_value_total") or 0),
+                )
+                interaction_daily = dict(interactions.get("daily") or {})
+                if interaction_daily:
+                    technical_daily = pd.DataFrame([
+                        {
+                            "Data": day,
+                            "Kompletność": (
+                                int(row.get("complete") or 0)
+                                / max(1, int(row.get("count") or 0))
+                            ),
+                            "Dokładny czas": (
+                                int(row.get("exact_time") or 0)
+                                / max(1, int(row.get("count") or 0))
+                            ),
+                        }
+                        for day, row in sorted(interaction_daily.items())
+                    ])
+                    technical_daily_figure = go.Figure()
+                    for metric_name, color in (
+                        ("Kompletność", "#43e0c0"),
+                        ("Dokładny czas", "#4f7cff"),
+                    ):
+                        technical_daily_figure.add_scatter(
+                            x=technical_daily["Data"],
+                            y=technical_daily[metric_name],
+                            mode="lines+markers", name=metric_name,
+                            line=dict(width=3, color=color),
+                        )
+                    technical_daily_figure.update_layout(
+                        title="Techniczna jakość odpowiedzi w czasie",
+                        yaxis=dict(range=[0, 1.05], tickformat=".0%"),
+                        legend=dict(orientation="h"),
+                    )
+                    st.plotly_chart(
+                        technical_daily_figure, width="stretch",
+                        config=PLOTLY_CHART_CONFIG,
+                    )
+
+            score_buckets = dict(primary.get("score_buckets") or {})
+            if score_buckets:
+                st.markdown("#### Oceny użytkowników")
+                score_figure = go.Figure(go.Pie(
+                    labels=list(score_buckets.keys()),
+                    values=list(score_buckets.values()),
+                    hole=0.58,
+                    marker=dict(colors=["#ff6b6b", "#ffbf69", "#4f7cff", "#43e0c0"]),
+                    textinfo="label+value",
+                ))
+                score_figure.update_layout(
+                    title="Rozkład answer_quality", height=360,
+                    margin=dict(l=20, r=20, t=60, b=20),
+                )
+                st.plotly_chart(
+                    score_figure, width="stretch",
+                    config=PLOTLY_CHART_CONFIG,
+                )
+            feedback_labels = dict(primary.get("feedback_labels") or {})
+            if feedback_labels:
+                st.caption(
+                    "Pochodzenie ocen: "
+                    + ", ".join(
+                        f"{label}: {count}"
+                        for label, count in sorted(feedback_labels.items())
+                    )
+                )
+            component_scores = dict(primary.get("component_scores") or {})
+            if component_scores:
+                component_names = {
+                    "location": "Trafność lokalizacji",
+                    "time": "Trafność daty i czasu",
+                    "parameters": "Kompletność parametrów",
+                    "clarity": "Czytelność odpowiedzi",
+                }
+                component_frame = pd.DataFrame([
+                    {
+                        "Składnik": component_names.get(name, name),
+                        "Średnia": _model_quality_number(row.get("average_score")),
+                        "Liczba ocen": int(row.get("count") or 0),
+                    }
+                    for name, row in component_scores.items()
+                    if isinstance(row, dict)
+                ]).dropna(subset=["Średnia"])
+                if not component_frame.empty:
+                    component_figure = go.Figure(go.Bar(
+                        x=component_frame["Średnia"],
+                        y=component_frame["Składnik"],
+                        orientation="h",
+                        marker_color="#43e0c0",
+                        text=[f"{value:.0%}" for value in component_frame["Średnia"]],
+                        textposition="outside",
+                        customdata=component_frame[["Liczba ocen"]],
+                        hovertemplate=(
+                            "%{y}<br>Średnia: %{x:.1%}<br>Liczba ocen: "
+                            "%{customdata[0]}<extra></extra>"
+                        ),
+                    ))
+                    component_figure.update_layout(
+                        title="Ocena poszczególnych składników odpowiedzi",
+                        xaxis=dict(range=[0, 1.08], tickformat=".0%"),
+                        yaxis_title="", height=350,
+                    )
+                    st.plotly_chart(
+                        component_figure, width="stretch",
+                        config=PLOTLY_CHART_CONFIG,
+                    )
+                    radar_frame = pd.concat([
+                        component_frame,
+                        component_frame.iloc[[0]],
+                    ], ignore_index=True)
+                    radar_figure = go.Figure(go.Scatterpolar(
+                        r=radar_frame["Średnia"],
+                        theta=radar_frame["Składnik"],
+                        fill="toself", name="Oceny użytkowników",
+                        line=dict(color="#43e0c0", width=3),
+                    ))
+                    radar_figure.update_layout(
+                        title="Profil jakości odpowiedzi",
+                        polar=dict(radialaxis=dict(range=[0, 1], tickformat=".0%")),
+                        showlegend=False, height=430,
+                    )
+                    st.plotly_chart(
+                        radar_figure, width="stretch",
+                        config=PLOTLY_CHART_CONFIG,
+                    )
+            daily = pd.DataFrame(primary.get("daily") or [])
+            if not daily.empty:
+                quality_figure = go.Figure()
+                quality_figure.add_scatter(
+                    x=daily["date"], y=daily["average_score"], mode="lines+markers",
+                    name="Średnia jakość", line=dict(color="#43e0c0", width=3),
+                )
+                quality_figure.add_bar(
+                    x=daily["date"], y=daily["count"], name="Liczba ocen",
+                    yaxis="y2", opacity=0.28, marker_color="#4f7cff",
+                )
+                quality_figure.update_layout(
+                    title="Jakość odpowiedzi w czasie",
+                    yaxis=dict(title="answer_quality", range=[0, 1]),
+                    yaxis2=dict(title="liczba ocen", overlaying="y", side="right"),
+                    legend=dict(orientation="h"),
+                )
+                st.plotly_chart(
+                    quality_figure, width="stretch", config=PLOTLY_CHART_CONFIG
+                )
+            requested_parameters = dict(interactions.get("requested_parameters") or {})
+            if requested_parameters:
+                parameter_frame = pd.DataFrame([
+                    {"Parametr": key, "Liczba zapytań": value}
+                    for key, value in requested_parameters.items()
+                ]).sort_values("Liczba zapytań", ascending=False)
+                parameter_figure = go.Figure(go.Bar(
+                    x=parameter_frame["Parametr"],
+                    y=parameter_frame["Liczba zapytań"],
+                    marker_color="#4f7cff",
+                ))
+                parameter_figure.update_layout(
+                    title="Parametry wymagane przez użytkowników",
+                    xaxis_title="Parametr", yaxis_title="Liczba zapytań",
+                )
+                st.plotly_chart(
+                    parameter_figure, width="stretch",
+                    config=PLOTLY_CHART_CONFIG,
+                )
+            if remote.get("status") == "ok":
+                st.caption(
+                    "Langfuse działa wyłącznie jako dodatkowa diagnostyka; "
+                    "źródłem danych panelu jest nasz Object Store."
+                )
+        except Exception as exc:
+            st.warning(f"Nie udało się odczytać analityki jakości odpowiedzi: {exc}")
+
+    with history_tab:
+        history = candidates.copy()
+        if not history.empty:
+            history["Start"] = pd.to_datetime(history["Start"], unit="ms", errors="coerce")
+            history = history.sort_values("Start", ascending=False)
+            st.dataframe(
+                history[[column for column in (
+                    "Start", "Target", "Model", "Profil", "Wybrany", "Status", "Dataset", "Run ID"
+                ) if column in history]],
+                hide_index=True, width="stretch",
+            )
+        tracking_uri = comparison.get("tracking_uri")
+        st.caption(
+            "Na DigitalOcean używany jest wersjonowany artefakt porównania; "
+            "lokalny serwer MLflow nie jest wymagany do działania aplikacji."
+        )
+        if tracking_uri:
+            st.code(str(tracking_uri))
+
+
+with model_tab:
+    st.subheader("Centrum modeli, MLOps i niezależnych ocen odpowiedzi")
+    st.caption(
+        "Ranking, Aktywne modele i Historia dotyczą wyłącznie modeli ML. "
+        "Jakość odpowiedzi dotyczy wyłącznie gotowych odpowiedzi ocenianych "
+        "pod mapą — metryki MAE/RMSE nie są oceną tekstu."
+    )
+    render_ml_quality_overview()
+
+
+with cost_tab:
+    refresh_costs = st.button(
+        "Odśwież koszty i historię",
+        help="Czyści tylko 60-sekundowy cache agregatu FinOps.",
+        key="refresh-finops-overview",
+    )
+    if refresh_costs:
+        load_quality_overview.clear()
+    try:
+        cost_quality = load_quality_overview()
+    except Exception as exc:
+        st.warning(f"Nie można pobrać agregatu kosztów i wykorzystania: {exc}")
+        cost_quality = {}
+    _render_cost_center(
+        cost_quality,
+        _normalise_query_result(st.session_state.get("query_result")) or {},
     )
 
-    health_cols = st.columns(4)
-    health_cols[0].metric("Wersja", health.get("version") or APP_VERSION)
-    health_cols[1].metric("Powierzchnie", health.get("spatial_surface_count", 0))
-    health_cols[2].metric("Backend", health.get("storage_backend", health.get("backend", "—")))
-    health_cols[3].metric("Tryb NLP", health.get("nlp_provider", "—"))
 
 with docs_tab:
     st.subheader("Dokumentacja techniczna i matematyczna")

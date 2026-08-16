@@ -1,0 +1,94 @@
+﻿[CmdletBinding()]
+param(
+    [string]$ProjectRoot = (Get-Location).Path,
+    [string]$RuntimeRoot = 'C:\ProgramData\SmogAI',
+    [string]$SourceRoot = '',
+    [string]$Approval = '',
+    [double]$FreshnessThresholdHours = 8.0,
+    [switch]$AllowStaleData,
+    [switch]$SkipSeal,
+    [string]$SealOutputRoot = 'C:\Users\edzio\Downloads\SmogAI-Seals'
+)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$ProjectRoot = [IO.Path]::GetFullPath($ProjectRoot)
+if (-not $SourceRoot) { $SourceRoot = Join-Path $RuntimeRoot 'object-store' }
+$Python = Join-Path $ProjectRoot '.venv\Scripts\python.exe'
+$Config = Join-Path $RuntimeRoot 'config.yaml'
+$EnvFile = Join-Path $RuntimeRoot 'smog-ai.env'
+$Stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$ReportRoot = Join-Path $RuntimeRoot "reports\digitalocean\$Stamp"
+New-Item -ItemType Directory -Path $ReportRoot -Force | Out-Null
+
+if (-not $SkipSeal) {
+    & (Join-Path $ProjectRoot 'scripts\Protect-SmogAI-Before-DigitalOcean.ps1') `
+        -ProjectRoot $ProjectRoot -OutputRoot $SealOutputRoot `
+        -Label "before-digitalocean-$Stamp"
+    if ($LASTEXITCODE -ne 0) { throw "E0 release seal failed: $LASTEXITCODE" }
+}
+
+# Shell overrides caused several earlier prefix/root mismatches. The env file is
+# the single source of truth for the DigitalOcean destination in this process.
+$OverrideNames = @(
+    'SMOG_AI_OBJECT_STORE_BACKEND', 'SMOG_AI_OBJECT_STORE_LOCAL_ROOT',
+    'SMOG_AI_OBJECT_STORE_BUCKET', 'SMOG_AI_OBJECT_STORE_ENDPOINT',
+    'SMOG_AI_OBJECT_STORE_REGION', 'SMOG_AI_OBJECT_STORE_PREFIX',
+    'SMOG_AI_SERVER_STORAGE_BACKEND'
+)
+$Saved = @{}
+foreach ($Name in $OverrideNames) {
+    $Saved[$Name] = [Environment]::GetEnvironmentVariable($Name, 'Process')
+    [Environment]::SetEnvironmentVariable($Name, $null, 'Process')
+}
+try {
+    Write-Host 'E1/4 Data freshness report' -ForegroundColor Cyan
+    & $Python -m smog_ai data-freshness-report `
+        --output-dir (Join-Path $ReportRoot 'freshness') `
+        --threshold-hours $FreshnessThresholdHours `
+        --config $Config --env-file $EnvFile |
+        Tee-Object -FilePath (Join-Path $ReportRoot '01-data-freshness.json')
+    if ($LASTEXITCODE -notin @(0, 4)) { throw "Freshness report failed: $LASTEXITCODE" }
+
+    $FreshnessPath = Join-Path $ReportRoot 'freshness\data-freshness-latest.json'
+    $Freshness = Get-Content -LiteralPath $FreshnessPath -Raw | ConvertFrom-Json
+    if ($Freshness.overall_status -ne 'fresh') {
+        Write-Warning ("Data freshness status: {0}. Review: {1}" -f `
+            $Freshness.overall_status, $FreshnessPath)
+        if (($Approval -eq 'PUBLISH VERIFIED SERVING V2') -and (-not $AllowStaleData)) {
+            throw "Publication blocked: measurement data is not fresh. Refresh GIOS/IMGW data or explicitly use -AllowStaleData."
+        }
+    }
+
+    Write-Host 'E2/4 DigitalOcean Spaces preflight' -ForegroundColor Cyan
+    $Preflight = Join-Path $ReportRoot '02-serving-preflight.json'
+    & $Python -m smog_ai digitalocean-serving-preflight `
+        --source-root $SourceRoot --output $Preflight `
+        --config $Config --env-file $EnvFile |
+        Tee-Object -FilePath (Join-Path $ReportRoot '02-serving-preflight.log')
+    if ($LASTEXITCODE -ne 0) { throw "DigitalOcean preflight failed: $LASTEXITCODE" }
+
+    if ($Approval -ne 'PUBLISH VERIFIED SERVING V2') {
+        Write-Host 'Preflight passed. No external write was performed.' -ForegroundColor Yellow
+        Write-Host "To publish, repeat with -Approval 'PUBLISH VERIFIED SERVING V2'."
+        Write-Host "Reports: $ReportRoot"
+        exit 0
+    }
+
+    Write-Host 'E3/4 Atomic Serving v2 publication' -ForegroundColor Cyan
+    & $Python -m smog_ai publish-serving-release `
+        --source-root $SourceRoot --digitalocean-destination `
+        --config $Config --env-file $EnvFile |
+        Tee-Object -FilePath (Join-Path $ReportRoot '03-publication.json')
+    if ($LASTEXITCODE -ne 0) { throw "Serving publication failed: $LASTEXITCODE" }
+
+    Write-Host 'E4/4 Remote pointer and storage verification' -ForegroundColor Cyan
+    & $Python -m smog_ai storage-health --config $Config --env-file $EnvFile |
+        Tee-Object -FilePath (Join-Path $ReportRoot '04-storage-health.json')
+    if ($LASTEXITCODE -ne 0) { throw "Remote storage verification failed: $LASTEXITCODE" }
+    Write-Host "DigitalOcean publication completed. Reports: $ReportRoot" -ForegroundColor Green
+}
+finally {
+    foreach ($Name in $OverrideNames) {
+        [Environment]::SetEnvironmentVariable($Name, $Saved[$Name], 'Process')
+    }
+}

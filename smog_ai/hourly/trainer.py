@@ -417,7 +417,7 @@ def _precipitation_quality_gate(
 
     return {
         "passed": not failures,
-        "status": "accepted" if not failures else "experimental",
+        "status": "approved" if not failures else "experimental",
         "failures": failures,
         "thresholds": {
             "minimum_mae_improvement_vs_persistence": (
@@ -433,6 +433,228 @@ def _precipitation_quality_gate(
             "maximum_absolute_bias_mm": settings.maximum_absolute_bias_mm,
         },
     }
+
+
+def _model_quality_classification(
+    config: AppConfig,
+    *,
+    target: str,
+    provider_name: str,
+    metrics: dict[str, Any],
+) -> dict[str, Any]:
+    """Classify a technically completed candidate without hiding soft failures."""
+
+    if target == "precipitation_mm":
+        gate = dict(metrics.get("precipitation_quality_gate") or {})
+        reasons = list(gate.get("failures") or [])
+        active_comparison = dict(metrics.get("active_model_comparison") or {})
+        minimum_active = float(
+            config.hourly_forecasting.minimum_mae_improvement_fraction
+        )
+        if active_comparison.get("active_model_exists"):
+            if active_comparison.get("available") is not True:
+                reasons.append(
+                    {
+                        "reason": "active_model_comparison_unavailable",
+                        "error": active_comparison.get("error"),
+                    }
+                )
+            else:
+                improvement = active_comparison.get(
+                    "candidate_improvement_fraction"
+                )
+                if (
+                    improvement is None
+                    or not np.isfinite(float(improvement))
+                    or float(improvement) < minimum_active
+                ):
+                    reasons.append(
+                        {
+                            "reason": "insufficient_improvement_vs_active_model",
+                            "actual": improvement,
+                            "minimum": minimum_active,
+                            "active_provider": active_comparison.get("provider"),
+                            "active_version": active_comparison.get("version"),
+                        }
+                    )
+        passed = gate.get("passed") is True and not reasons
+        return {
+            "status": "approved" if passed else "experimental",
+            "passed": passed,
+            "hard_failure": False,
+            "reasons": reasons,
+            "thresholds": {
+                **dict(gate.get("thresholds") or {}),
+                "minimum_improvement_vs_active_model": minimum_active,
+            },
+            "comparison": "precipitation_quality_gate_and_active_model",
+        }
+
+    count = metrics.get("count")
+    mae = metrics.get("mae")
+    if (
+        count is None
+        or int(count) <= 0
+        or mae is None
+        or not np.isfinite(float(mae))
+    ):
+        return {
+            "status": "rejected",
+            "passed": False,
+            "hard_failure": True,
+            "reasons": [
+                {
+                    "reason": "invalid_validation_metrics",
+                    "count": count,
+                    "mae": mae,
+                }
+            ],
+            "thresholds": {},
+            "comparison": "validation_integrity",
+        }
+
+    minimum = float(config.hourly_forecasting.minimum_mae_improvement_fraction)
+    improvement = metrics.get("improvement_vs_persistence")
+    reasons: list[dict[str, Any]] = []
+    if provider_name == "persistence":
+        reasons.append({"reason": "persistence_selected_as_fallback"})
+    elif improvement is not None and np.isfinite(float(improvement)) and float(improvement) < minimum:
+        reasons.append(
+            {
+                "reason": "insufficient_improvement_vs_persistence",
+                "actual": float(improvement),
+                "minimum": minimum,
+            }
+        )
+    active_comparison = dict(metrics.get("active_model_comparison") or {})
+    if active_comparison.get("active_model_exists"):
+        if active_comparison.get("available") is not True:
+            reasons.append(
+                {
+                    "reason": "active_model_comparison_unavailable",
+                    "error": active_comparison.get("error"),
+                }
+            )
+        else:
+            incumbent_improvement = active_comparison.get(
+                "candidate_improvement_fraction"
+            )
+            if (
+                incumbent_improvement is None
+                or not np.isfinite(float(incumbent_improvement))
+                or float(incumbent_improvement) < minimum
+            ):
+                reasons.append(
+                    {
+                        "reason": "insufficient_improvement_vs_active_model",
+                        "actual": incumbent_improvement,
+                        "minimum": minimum,
+                        "active_provider": active_comparison.get("provider"),
+                        "active_version": active_comparison.get("version"),
+                    }
+                )
+    return {
+        "status": "approved" if not reasons else "experimental",
+        "passed": not reasons,
+        "hard_failure": False,
+        "reasons": reasons,
+        "thresholds": {
+            "minimum_mae_improvement_fraction": minimum,
+        },
+        "comparison": "chronological_holdout_vs_persistence_and_active_model",
+    }
+
+
+def _evaluate_active_model(
+    session: Session,
+    *,
+    registry: Any,
+    config: AppConfig,
+    target: str,
+    valid: pd.DataFrame,
+    candidate_mae: float,
+) -> dict[str, Any]:
+    active = session.scalar(
+        select(ModelVersion)
+        .where(
+            ModelVersion.parameter == target,
+            ModelVersion.forecast_horizon == HOURLY_MODEL_HORIZON_SENTINEL,
+            ModelVersion.active.is_(True),
+        )
+        .order_by(ModelVersion.activated_at.desc(), ModelVersion.created_at.desc())
+    )
+    if active is None:
+        return {"active_model_exists": False, "available": False}
+    base = {
+        "active_model_exists": True,
+        "available": False,
+        "provider": active.algorithm,
+        "version": active.semantic_version,
+        "artifact_path": active.artifact_path,
+        "quality_status": str(
+            (active.metrics_json or {}).get("quality_status") or "approved"
+        ).lower(),
+        "bootstrap": bool((active.metrics_json or {}).get("bootstrap")),
+    }
+    try:
+        if not active.artifact_path:
+            raise FileNotFoundError("active model has no artifact path")
+        artifact = joblib.load(Path(active.artifact_path))
+        if not isinstance(artifact, dict):
+            raise TypeError("active model artifact is not a dictionary")
+        provider_name = str(artifact.get("provider") or active.algorithm)
+        feature_columns = tuple(artifact.get("feature_columns") or [])
+        if not feature_columns:
+            raise ValueError("active model artifact has no feature columns")
+        task = str(
+            artifact.get("task")
+            or ("hurdle_regression" if target == "precipitation_mm" else "regression")
+        )
+        provider = registry.get(provider_name)
+        prediction = provider.predict(
+            artifact["provider_artifact"],
+            valid.reindex(columns=feature_columns),
+            context=ModelPredictContext(
+                target_name=target,
+                feature_columns=feature_columns,
+                task=task,
+                metadata=dict(artifact.get("metadata") or {}),
+            ),
+        )
+        values = np.asarray(prediction.values, dtype=float)
+        try:
+            from smog_ai.hourly.incremental import apply_residual_correction
+
+            values, _ = apply_residual_correction(artifact, valid, values)
+        except Exception:
+            logger.warning(
+                "Cannot apply incumbent residual correction target=%s version=%s",
+                target,
+                active.semantic_version,
+                exc_info=True,
+            )
+        values = _clip_predictions(config, target, values)
+        actual = valid["target"].to_numpy(dtype=float)
+        mask = np.isfinite(actual) & np.isfinite(values)
+        if not mask.any():
+            raise ValueError("active model produced no finite validation predictions")
+        incumbent_mae = float(np.mean(np.abs(actual[mask] - values[mask])))
+        improvement = (
+            (incumbent_mae - float(candidate_mae)) / incumbent_mae
+            if incumbent_mae > 0
+            else None
+        )
+        return {
+            **base,
+            "available": True,
+            "provider": provider_name,
+            "validation_rows": int(mask.sum()),
+            "active_model_mae": incumbent_mae,
+            "candidate_mae": float(candidate_mae),
+            "candidate_improvement_fraction": improvement,
+        }
+    except Exception as exc:
+        return {**base, "error": f"{type(exc).__name__}: {exc}"}
 
 
 def _split_chronologically(frame: pd.DataFrame, fraction: float) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -1234,6 +1456,7 @@ def train_hourly_models(
     training_session: Session | None = None,
     dataset_provenance: dict[str, Any] | None = None,
     commit_live_metadata: bool = False,
+    activation_policy: str = "quality_gated",
 ) -> StageStats:
     """Train exact-hour models under an explicit data/time budget.
 
@@ -1241,6 +1464,11 @@ def train_hourly_models(
     materialised sample used by this run.  ``quick`` is intended for weekly
     refreshes; ``full`` is intended for periodic champion/challenger searches.
     """
+
+    if activation_policy not in {"quality_gated", "candidate_only"}:
+        raise ValueError(
+            "activation_policy must be quality_gated or candidate_only"
+        )
 
     if not config.hourly_forecasting.enabled:
         if progress is not None:
@@ -1267,6 +1495,7 @@ def train_hourly_models(
     )
     stats = StageStats()
     summaries: list[dict[str, Any]] = []
+    completed_models: list[dict[str, Any]] = []
     frames: dict[str, pd.DataFrame] = {}
     provenance: dict[str, dict[str, Any]] = {}
 
@@ -1281,6 +1510,29 @@ def train_hourly_models(
             if profile_name is not None
             else fallback
         )
+
+    candidate_plan = [
+        {
+            "target": target,
+            "provider": provider,
+            "candidate_index": index,
+            "candidate_total": len(algorithms_by_target[target]),
+        }
+        for target in config.hourly_forecasting.targets
+        for index, provider in enumerate(algorithms_by_target[target], start=1)
+    ]
+
+    def update_candidate_plan(
+        target: str,
+        provider: str,
+        **changes: Any,
+    ) -> None:
+        """Keep the live plan self-contained for robust external monitoring."""
+
+        for item in candidate_plan:
+            if item["target"] == target and item["provider"] == provider:
+                item.update(changes)
+                return
 
     target_budgets = {
         target: _target_training_budget(
@@ -1332,6 +1584,7 @@ def train_hourly_models(
             detail={
                 "target": target,
                 "phase": "load_frame",
+                "candidate_plan": candidate_plan,
                 "profile": profile.name,
                 "policy": policy.name,
             },
@@ -1542,6 +1795,23 @@ def train_hourly_models(
                     remaining_candidates = configured_algorithms[
                         candidate_index - 1 :
                     ]
+                    skipped_at = utc_now().isoformat()
+                    for skipped_provider in remaining_candidates:
+                        update_candidate_plan(
+                            target,
+                            skipped_provider,
+                            status="candidate_skipped_budget",
+                            reason="time_budget_exhausted",
+                            finished_at=skipped_at,
+                        )
+                        completed_models.append(
+                            {
+                                "target": target,
+                                "provider": skipped_provider,
+                                "status": "candidate_skipped_budget",
+                                "reason": "time_budget_exhausted",
+                            }
+                        )
                     remaining_weight = sum(
                         _provider_work_weight(name)
                         for name in remaining_candidates
@@ -1555,12 +1825,20 @@ def train_hourly_models(
                                 "phase": "candidate_validation",
                                 "skipped_candidates": list(remaining_candidates),
                                 "budget": budget.snapshot(),
+                                "candidate_plan": candidate_plan,
+                                "completed_models": list(completed_models),
                             },
                             status="skipped",
                         )
                     break
 
                 provider_weight = _provider_work_weight(provider_name)
+                update_candidate_plan(
+                    target,
+                    provider_name,
+                    status="candidate_running",
+                    started_at=utc_now().isoformat(),
+                )
                 try:
                     with work.task(
                         (
@@ -1586,6 +1864,8 @@ def train_hourly_models(
                             "rows_train": len(train),
                             "rows_validation": len(valid),
                             "budget": budget.snapshot(),
+                            "candidate_plan": candidate_plan,
+                            "completed_models": list(completed_models),
                         },
                     ):
                         candidate = _fit_candidate(
@@ -1624,6 +1904,43 @@ def train_hourly_models(
                     mlflow_run_ids[provider_name] = run_id
                     candidates.append(candidate)
                     stats.inserted += 1
+                    update_candidate_plan(
+                        target,
+                        provider_name,
+                        status="candidate_trained",
+                        score=candidate.score,
+                        mlflow_run_id=run_id,
+                        finished_at=utc_now().isoformat(),
+                    )
+                    completed_models.append(
+                        {
+                            "target": target,
+                            "provider": provider_name,
+                            "status": "candidate_trained",
+                            "score": candidate.score,
+                            "mlflow_run_id": run_id,
+                        }
+                    )
+                    if progress is not None:
+                        progress.update(
+                            "training",
+                            work.fraction,
+                            task=(
+                                f"{target}: ukończono kandydata {provider_name}"
+                            ),
+                            detail={
+                                "target": target,
+                                "provider": provider_name,
+                                "phase": "candidate_completed",
+                                "candidate_index": candidate_index,
+                                "candidate_total": len(configured_algorithms),
+                                "completed_models": list(completed_models),
+                                "candidate_plan": candidate_plan,
+                            },
+                            completed_weight=work.completed_weight,
+                            total_weight=work.total_weight,
+                            force=True,
+                        )
                 except Exception as exc:
                     logger.exception(
                         "Hourly candidate failed target=%s provider=%s",
@@ -1640,6 +1957,38 @@ def train_hourly_models(
                             "training_profile": profile.name,
                         }
                     )
+                    completed_models.append(
+                        {
+                            "target": target,
+                            "provider": provider_name,
+                            "status": "candidate_failed",
+                            "error": str(exc),
+                        }
+                    )
+                    update_candidate_plan(
+                        target,
+                        provider_name,
+                        status="candidate_failed",
+                        error=str(exc),
+                        finished_at=utc_now().isoformat(),
+                    )
+                    if progress is not None:
+                        progress.update(
+                            "training",
+                            work.fraction,
+                            task=f"{target}: kandydat {provider_name} nieudany",
+                            detail={
+                                "target": target,
+                                "provider": provider_name,
+                                "phase": "candidate_failed",
+                                "completed_models": list(completed_models),
+                                "candidate_plan": candidate_plan,
+                                "error": str(exc),
+                            },
+                            completed_weight=work.completed_weight,
+                            total_weight=work.total_weight,
+                            force=True,
+                        )
 
             if not candidates:
                 raise RuntimeError(
@@ -1732,9 +2081,41 @@ def train_hourly_models(
                     "maximum_horizons_per_origin": profile.horizons_per_origin,
                 },
             }
+            metrics["active_model_comparison"] = _evaluate_active_model(
+                session,
+                registry=registry,
+                config=config,
+                target=target,
+                valid=valid,
+                candidate_mae=float(selected.score),
+            )
+            quality = _model_quality_classification(
+                config,
+                target=target,
+                provider_name=selected.provider_name,
+                metrics=metrics,
+            )
+            metrics["quality_classification"] = quality
+            metrics["quality_status"] = quality["status"]
+            metrics["activation_policy"] = activation_policy
+            activate_model = bool(
+                activation_policy == "quality_gated"
+                and quality["status"] == "approved"
+            )
+            metrics["activated"] = activate_model
+            if quality["status"] == "rejected":
+                raise RuntimeError(
+                    "Candidate rejected by technical quality gate: "
+                    + json.dumps(quality, ensure_ascii=False, default=str)
+                )
 
+            registration_task = (
+                f"{target}: save local candidate model"
+                if activation_policy == "candidate_only"
+                else f"{target}: save model and apply approved-only activation"
+            )
             with work.task(
-                f"{target}: save, upload and activate model",
+                registration_task,
                 target_budgets[target]["register"],
                 task_key=f"training:{profile.name}:{target}:register-upload",
                 fallback_seconds=60.0,
@@ -1765,15 +2146,6 @@ def train_hourly_models(
                         "passed", True
                     )
                 )
-                activate_model = True
-                if (
-                    target == "precipitation_mm"
-                    and config.hourly_forecasting.precipitation.mark_experimental_on_failure
-                    and not precipitation_gate_passed
-                ):
-                    activate_model = bool(
-                        config.hourly_forecasting.precipitation.activate_experimental_locally
-                    )
                 if activate_model:
                     _activate(session, config, model)
                     mlflow_bridge.mark_selected(
@@ -1785,11 +2157,15 @@ def train_hourly_models(
                     )
                 if target == "precipitation_mm" and not precipitation_gate_passed:
                     stats.warnings += 1
+                elif quality["status"] == "experimental":
+                    stats.warnings += 1
 
             selected_providers[target] = selected.provider_name
             training_run.best_model_version_id = model.id
-            if target == "precipitation_mm" and not precipitation_gate_passed:
+            if quality["status"] == "experimental":
                 training_run.status = "success_quality_experimental"
+            elif activation_policy == "candidate_only":
+                training_run.status = "success_candidate_approved"
             else:
                 training_run.status = (
                     "success_budget_truncated"
@@ -1807,6 +2183,9 @@ def train_hourly_models(
                     "improvement_vs_persistence"
                 ),
                 "quality_status": metrics.get("quality_status"),
+                "quality_classification": quality,
+                "activated": activate_model,
+                "activation_policy": activation_policy,
                 "horizons_hours": config.hourly_forecasting.horizons_hours,
                 "data_provenance": provenance[target],
                 "training_profile": profile.name,
@@ -1815,6 +2194,49 @@ def train_hourly_models(
                 "budget_truncated": budget_truncated,
             }
             summaries.append(dict(training_run.summary_json))
+            completed_models.append(
+                {
+                    "target": target,
+                    "provider": selected.provider_name,
+                    "status": training_run.status,
+                    "model_version": model.semantic_version,
+                    "selected": True,
+                    "score": selected.score,
+                    "quality_status": metrics.get("quality_status"),
+                    "quality_reasons": quality.get("reasons") or [],
+                    "activated": activate_model,
+                    "activation_policy": activation_policy,
+                }
+            )
+            update_candidate_plan(
+                target,
+                selected.provider_name,
+                status=training_run.status,
+                selected=True,
+                score=selected.score,
+                model_version=model.semantic_version,
+                quality_status=metrics.get("quality_status"),
+                quality_reasons=quality.get("reasons") or [],
+                activated=activate_model,
+                finished_at=utc_now().isoformat(),
+            )
+            if progress is not None:
+                progress.update(
+                    "training",
+                    work.fraction,
+                    task=f"{target}: model zapisany i wybrany",
+                    detail={
+                        "target": target,
+                        "provider": selected.provider_name,
+                        "phase": "target_completed",
+                        "model_version": model.semantic_version,
+                        "completed_models": list(completed_models),
+                        "candidate_plan": candidate_plan,
+                    },
+                    completed_weight=work.completed_weight,
+                    total_weight=work.total_weight,
+                    force=True,
+                )
             if commit_live_metadata:
                 session.commit()
         except Exception as exc:
@@ -1867,7 +2289,8 @@ def train_hourly_models(
         fallback_seconds=30.0,
         detail={"phase": "baseline_models"},
     ):
-        stats.inserted += ensure_hourly_baseline_models(session, config)
+        if activation_policy != "candidate_only":
+            stats.inserted += ensure_hourly_baseline_models(session, config)
         if commit_live_metadata:
             session.commit()
 
@@ -1912,6 +2335,7 @@ def train_hourly_models(
             else None
         ),
         "models": summaries,
+        "completed_models": completed_models,
         "registered_providers": registry.describe(),
         "model_comparison": (
             {
@@ -1927,4 +2351,3 @@ def train_hourly_models(
         ),
     }
     return stats
-

@@ -390,7 +390,7 @@ hourly_forecasting:
         temperature_c: [persistence, ridge]
         precipitation_mm: [hurdle_hist_gradient_boosting]
       fit_quantiles: false
-      max_wall_time_seconds: 1800
+      max_wall_time_seconds: 7200
     full:
       maximum_training_days_by_target:
         PM10: 730

@@ -67,6 +67,7 @@ class ServerSettings:
     artifact_schema_version: str = "1"
     spatial_enabled: bool = True
     spatial_cache_ttl_seconds: float = 60.0
+    spatial_cache_max_items: int = 64
     spatial_places_csv: Path = _default_places_path()
 
     nlp_provider: str = "rule_based"
@@ -93,6 +94,15 @@ class ServerSettings:
     prompt_template_version: str = "air-query-v1"
     prompt_feedback_enabled: bool = True
     prompt_feedback_path: Path = Path("server_data/prompt-feedback.jsonl")
+    own_analytics_enabled: bool = True
+    own_analytics_private_prefix: str = "private/analytics"
+    own_analytics_retention_days: int = 90
+    analytics_object_store_bucket: str | None = None
+    analytics_object_store_endpoint: str | None = None
+    analytics_object_store_region: str | None = None
+    analytics_object_store_prefix: str = "smog-ai/analytics"
+    analytics_object_store_access_key_env: str = "ANALYTICS_SPACES_ACCESS_KEY_ID"
+    analytics_object_store_secret_key_env: str = "ANALYTICS_SPACES_SECRET_ACCESS_KEY"
     mlflow_ui_url: str | None = None
 
     @classmethod
@@ -156,6 +166,9 @@ class ServerSettings:
             spatial_cache_ttl_seconds=float(
                 os.getenv("SMOG_AI_SPATIAL_CACHE_TTL_SECONDS", "60")
             ),
+            spatial_cache_max_items=int(
+                os.getenv("SMOG_AI_SPATIAL_CACHE_MAX_ITEMS", "64")
+            ),
             spatial_places_csv=Path(
                 os.getenv("SMOG_AI_SPATIAL_PLACES_CSV", str(_default_places_path()))
             ).expanduser(),
@@ -207,6 +220,24 @@ class ServerSettings:
                     str(data_dir / "prompt-feedback.jsonl"),
                 )
             ).expanduser(),
+            own_analytics_enabled=_env_bool("SMOG_AI_OWN_ANALYTICS_ENABLED", True),
+            own_analytics_private_prefix=os.getenv(
+                "SMOG_AI_OWN_ANALYTICS_PRIVATE_PREFIX", "private/analytics"
+            ).strip("/ "),
+            own_analytics_retention_days=int(
+                os.getenv(
+                    "SMOG_AI_ANALYTICS_RETENTION_DAYS",
+                    os.getenv("ANALYTICS_RETENTION_DAYS", "90"),
+                )
+            ),
+            analytics_object_store_bucket=_env_optional("ANALYTICS_SPACES_BUCKET"),
+            analytics_object_store_endpoint=_env_optional(
+                "ANALYTICS_SPACES_ENDPOINT_URL"
+            ),
+            analytics_object_store_region=_env_optional("ANALYTICS_SPACES_REGION"),
+            analytics_object_store_prefix=os.getenv(
+                "ANALYTICS_SPACES_PREFIX", "smog-ai/analytics"
+            ).strip("/ "),
             mlflow_ui_url=_env_optional("SMOG_AI_MLFLOW_UI_URL"),
         )
 
@@ -229,6 +260,25 @@ class ServerSettings:
             access_key_env=self.object_store_access_key_env,
             secret_key_env=self.object_store_secret_key_env,
             session_token_env=self.object_store_session_token_env,
+            verify_tls=self.object_store_verify_tls,
+            addressing_style=self.object_store_addressing_style,  # type: ignore[arg-type]
+        )
+
+    @property
+    def uses_separate_analytics_store(self) -> bool:
+        return bool(self.analytics_object_store_bucket)
+
+    def analytics_object_storage_config(self) -> ObjectStorageConfig:
+        return ObjectStorageConfig(
+            enabled=True,
+            backend="spaces",
+            local_root=self.object_store_local_root,
+            bucket=self.analytics_object_store_bucket,
+            endpoint_url=self.analytics_object_store_endpoint,
+            region=self.analytics_object_store_region,
+            prefix=self.analytics_object_store_prefix,
+            access_key_env=self.analytics_object_store_access_key_env,
+            secret_key_env=self.analytics_object_store_secret_key_env,
             verify_tls=self.object_store_verify_tls,
             addressing_style=self.object_store_addressing_style,  # type: ignore[arg-type]
         )
@@ -262,6 +312,14 @@ class ServerSettings:
             raise RuntimeError("SMOG_AI_SERVER_RATE_LIMIT_PER_MINUTE must be at least 1")
         if self.spatial_cache_ttl_seconds < 0:
             raise RuntimeError("SMOG_AI_SPATIAL_CACHE_TTL_SECONDS cannot be negative")
+        if self.spatial_cache_max_items < 1:
+            raise RuntimeError("SMOG_AI_SPATIAL_CACHE_MAX_ITEMS must be at least 1")
+        if self.uses_separate_analytics_store:
+            self.analytics_object_storage_config()
+        if not 1 <= self.own_analytics_retention_days <= 3650:
+            raise RuntimeError(
+                "SMOG_AI_ANALYTICS_RETENTION_DAYS must be between 1 and 3650"
+            )
         if self.spatial_enabled and not self.spatial_places_csv.exists():
             raise RuntimeError(
                 f"Polish places gazetteer does not exist: {self.spatial_places_csv}"

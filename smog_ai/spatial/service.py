@@ -21,13 +21,14 @@ from smog_ai.data_validation import validate_frame
 from smog_ai.database.models import AirStation, Forecast, ModelVersion
 from smog_ai.domain import StageStats
 from smog_ai.progress import ProgressReporter, WeightedStageProgress
+from smog_ai.quality import quality_metadata
 from smog_ai.spatial.colors import rgba_for_values, unit_for
 from smog_ai.spatial.contracts import SpatialGrid, SpatialSurface
 from smog_ai.spatial.factory import create_spatial_interpolator
 from smog_ai.spatial.grid import create_poland_grid, load_boundary_geojson
 from smog_ai.time_utils import ensure_utc
 
-SPATIAL_SCHEMA_VERSION = "1.2"
+SPATIAL_SCHEMA_VERSION = "2.0"
 
 
 def _configured_surface_axes(config: AppConfig) -> tuple[list[str], list[int]]:
@@ -159,6 +160,12 @@ def _forecast_station_frames(session: Session, config: AppConfig) -> dict[tuple[
     grouped: dict[tuple[str, int], list[dict[str, Any]]] = {}
     for forecast, station, model in session.execute(statement).all():
         feature_payload = dict(forecast.features_json or {})
+        quality = quality_metadata(
+            str(forecast.parameter),
+            dict(model.metrics_json or {}) if model else {},
+        )
+        if not quality["experimental_publication_allowed"]:
+            continue
         value = float(forecast.predicted_value)
         if not math.isfinite(value):
             continue
@@ -211,6 +218,9 @@ def _forecast_station_frames(session: Session, config: AppConfig) -> dict[tuple[
                 ),
                 "model_version": model.semantic_version if model else forecast.model_version_id,
                 "algorithm": model.algorithm if model else None,
+                "quality_status": quality["quality_status"],
+                "experimental": quality["experimental"],
+                "experimental_reason": quality["experimental_reason"],
             }
         )
     frames: dict[tuple[str, int], pd.DataFrame] = {}
@@ -423,6 +433,9 @@ def _build_surface(
                 else "locally_precomputed_spatial_forecast"
             ),
             "server_computation": "exact_point_idw_from_published_station_forecasts",
+            "quality_status": str(frame["quality_status"].iloc[0]),
+            "experimental": bool(frame["experimental"].iloc[0]),
+            "experimental_reason": frame["experimental_reason"].iloc[0],
         },
     )
 
@@ -498,13 +511,13 @@ def _publish_static_assets(
     places: list[dict[str, Any]],
 ) -> dict[str, Any]:
     boundary = load_boundary_geojson(config.spatial.boundary_geojson)
-    boundary_artifact = repository.put_json(
+    boundary_artifact = repository.put_gzip_json(
         repository.layout.spatial_boundary,
         boundary,
         immutable=True,
         metadata={"source": "Natural Earth", "license": "public-domain"},
     )
-    places_artifact = repository.put_json(
+    places_artifact = repository.put_gzip_json(
         repository.layout.spatial_places,
         {
             "schema_version": SPATIAL_SCHEMA_VERSION,
@@ -515,8 +528,10 @@ def _publish_static_assets(
     return {
         "boundary_key": boundary_artifact.key,
         "boundary_checksum": boundary_artifact.checksum,
+        "boundary_compression": "gzip",
         "places_key": places_artifact.key,
         "places_checksum": places_artifact.checksum,
+        "places_compression": "gzip",
     }
 
 
@@ -768,6 +783,8 @@ def build_spatial_surfaces(
         )
         manifest = {
             "schema_version": SPATIAL_SCHEMA_VERSION,
+            "contract": "smog-ai-serving-release",
+            "release_id": surface_set_id,
             "surface_set_id": surface_set_id,
             "generated_at": _iso(generated_at),
             "source_host_id": config.source_host_id,
@@ -806,6 +823,8 @@ def build_spatial_surfaces(
         )
         pointer = {
             "schema_version": SPATIAL_SCHEMA_VERSION,
+            "contract": "smog-ai-serving-pointer",
+            "release_id": surface_set_id,
             "surface_set_id": surface_set_id,
             "manifest_key": manifest_artifact.key,
             "manifest_checksum": manifest_artifact.checksum,

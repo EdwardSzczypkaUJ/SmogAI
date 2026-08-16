@@ -4,7 +4,51 @@ import json
 import time
 from pathlib import Path
 
-from smog_ai.progress import ProgressReporter, WeightedStageProgress, format_progress_text, read_progress
+from smog_ai.progress import (
+    ProgressReporter,
+    WeightedStageProgress,
+    _atomic_write_json,
+    format_progress_text,
+    read_progress,
+)
+
+
+def test_atomic_progress_write_retries_short_windows_lock(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    target = tmp_path / "progress.json"
+    original_replace = Path.replace
+    attempts = 0
+
+    def briefly_locked(self: Path, destination: Path) -> Path:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError(5, "simulated Windows destination lock", str(destination))
+        return original_replace(self, destination)
+
+    monkeypatch.setattr(Path, "replace", briefly_locked)
+    monkeypatch.setattr("smog_ai.progress.time.sleep", lambda _seconds: None)
+
+    assert _atomic_write_json(target, {"status": "running"}) is True
+    assert json.loads(target.read_text(encoding="utf-8"))["status"] == "running"
+    assert attempts == 3
+
+
+def test_atomic_progress_write_does_not_abort_work_on_persistent_lock(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    target = tmp_path / "progress.json"
+    target.write_text('{"status":"previous"}\n', encoding="utf-8")
+
+    def locked(_self: Path, destination: Path) -> Path:
+        raise PermissionError(5, "simulated persistent Windows lock", str(destination))
+
+    monkeypatch.setattr(Path, "replace", locked)
+    monkeypatch.setattr("smog_ai.progress.time.sleep", lambda _seconds: None)
+
+    assert _atomic_write_json(target, {"status": "running"}) is False
+    assert json.loads(target.read_text(encoding="utf-8"))["status"] == "previous"
 
 
 def test_progress_reporter_writes_atomic_state_and_eta(tmp_path: Path) -> None:

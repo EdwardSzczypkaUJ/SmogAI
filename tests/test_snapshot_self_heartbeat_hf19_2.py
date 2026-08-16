@@ -197,6 +197,7 @@ def test_snapshot_training_starts_renewable_lease_only_after_copy(
         selected="quick",
         targets="PM10",
         snapshot_selector="auto",
+        candidate_only=False,
         config=None,
         env_file=None,
     )

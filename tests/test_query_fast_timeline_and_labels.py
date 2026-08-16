@@ -195,10 +195,11 @@ def test_object_store_snapshot_payload_is_cached() -> None:
 
 def test_dashboard_uses_readable_labels_and_lazy_timeline() -> None:
     source = (ROOT / "server" / "dashboard" / "app.py").read_text(encoding="utf-8")
-    assert 'background=True' in source
-    assert 'parameters={"depthCompare": "always"}' in source
+    # HF21 labels are billboarded screen overlays without rectangular boxes.
+    assert 'background=True' not in source
+    assert 'parameters={"depthTest": False}' in source
     assert "SMOG_AI_DASHBOARD_QUERY_TIMEOUT_SECONDS" in source
     assert "SMOG_AI_DASHBOARD_TIMELINE_TIMEOUT_SECONDS" in source
     assert 'def load_timeline(' in source
     assert '"timeline"' in source
-    assert "* 12000.0" in source
+    assert "station_elevation * height_scale" in source

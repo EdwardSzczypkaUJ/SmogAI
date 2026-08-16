@@ -42,12 +42,15 @@ class TrainingSnapshot:
     schema_version: str | None
     row_counts: dict[str, int]
     data_ranges: dict[str, dict[str, Any]]
+    training_start: datetime | None = None
+    training_end: datetime | None = None
+    rows_removed_by_time_window: dict[str, int] | None = None
     remote_manifest_key: str | None = None
     mirror_error: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "dataset_id": self.dataset_id,
             "profile": self.profile,
             "targets": list(self.targets),
@@ -63,6 +66,19 @@ class TrainingSnapshot:
             "alembic_schema_version": self.schema_version,
             "row_counts": dict(self.row_counts),
             "data_ranges": dict(self.data_ranges),
+            "training_start": (
+                self.training_start.astimezone(UTC).isoformat()
+                if self.training_start is not None
+                else None
+            ),
+            "training_end": (
+                self.training_end.astimezone(UTC).isoformat()
+                if self.training_end is not None
+                else None
+            ),
+            "rows_removed_by_time_window": dict(
+                self.rows_removed_by_time_window or {}
+            ),
             "remote_manifest_key": self.remote_manifest_key,
             "mirror_error": self.mirror_error,
             "immutable": True,
@@ -100,6 +116,22 @@ class TrainingSnapshot:
                 str(key): dict(value)
                 for key, value in (payload.get("data_ranges") or {}).items()
             },
+            training_start=(
+                datetime.fromisoformat(str(payload["training_start"]))
+                if payload.get("training_start")
+                else None
+            ),
+            training_end=(
+                datetime.fromisoformat(str(payload["training_end"]))
+                if payload.get("training_end")
+                else None
+            ),
+            rows_removed_by_time_window={
+                str(key): int(value)
+                for key, value in (
+                    payload.get("rows_removed_by_time_window") or {}
+                ).items()
+            },
             remote_manifest_key=(
                 str(payload["remote_manifest_key"])
                 if payload.get("remote_manifest_key")
@@ -129,6 +161,42 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
         encoding="utf-8",
     )
     temporary.replace(path)
+
+
+def _remove_snapshot_tree(path: Path) -> None:
+    """Remove a snapshot atomically enough to avoid manifest-less DB orphans."""
+    quarantine_root = path.parent / "_retention_quarantine"
+    quarantine_root.mkdir(parents=True, exist_ok=True)
+    quarantine = quarantine_root / f"{path.name}-{uuid.uuid4().hex[:8]}"
+    path.replace(quarantine)
+
+    def make_writable(function: Any, failed_path: str, _error: Any) -> None:
+        selected = Path(failed_path)
+        try:
+            selected.chmod(selected.stat().st_mode | stat.S_IWUSR)
+        except OSError:
+            pass
+        function(failed_path)
+
+    for root_path, directory_names, file_names in os.walk(
+        quarantine, topdown=False
+    ):
+        root = Path(root_path)
+        for name in file_names:
+            try:
+                item = root / name
+                item.chmod(item.stat().st_mode | stat.S_IWUSR)
+            except OSError:
+                pass
+        for name in directory_names:
+            try:
+                item = root / name
+                item.chmod(item.stat().st_mode | stat.S_IWUSR)
+            except OSError:
+                pass
+    shutil.rmtree(quarantine, onerror=make_writable)
+    if quarantine.exists():
+        raise RuntimeError(f"Snapshot quarantine could not be removed: {quarantine}")
 
 
 def _snapshot_stats(
@@ -365,7 +433,18 @@ class TrainingSnapshotBridge:
         targets: Iterable[str],
         progress: ProgressReporter | None = None,
         mirror_manifest: bool | None = None,
+        training_start: datetime | None = None,
+        training_end: datetime | None = None,
     ) -> TrainingSnapshot:
+        if (training_start is None) != (training_end is None):
+            raise ValueError("training_start and training_end must be provided together")
+        if training_start is not None and training_end is not None:
+            if training_start.tzinfo is None or training_end.tzinfo is None:
+                raise ValueError("training time window must include a timezone")
+            training_start = training_start.astimezone(UTC)
+            training_end = training_end.astimezone(UTC)
+            if training_start >= training_end:
+                raise ValueError("training_start must be earlier than training_end")
         configured_url = make_url(self.config.database_url)
         if configured_url.drivername.startswith("sqlite") and configured_url.database:
             source = Path(str(configured_url.database)).expanduser().resolve()
@@ -516,6 +595,26 @@ class TrainingSnapshotBridge:
                 dst.commit()
             partial.replace(database)
 
+            rows_removed_by_time_window: dict[str, int] = {}
+            if training_start is not None and training_end is not None:
+                start_sql = training_start.strftime("%Y-%m-%d %H:%M:%S.%f")
+                end_sql = training_end.strftime("%Y-%m-%d %H:%M:%S.%f")
+                with closing(sqlite3.connect(database)) as bounded:
+                    bounded.execute("PRAGMA foreign_keys=ON")
+                    for table in ("air_measurements", "weather_measurements"):
+                        before = int(
+                            bounded.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                        )
+                        bounded.execute(
+                            f"DELETE FROM {table} WHERE measurement_time < ? OR measurement_time >= ?",
+                            (start_sql, end_sql),
+                        )
+                        after = int(
+                            bounded.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                        )
+                        rows_removed_by_time_window[table] = before - after
+                    bounded.commit()
+
             if progress is not None:
                 progress.update(
                     "snapshot",
@@ -552,6 +651,9 @@ class TrainingSnapshotBridge:
                 schema_version=schema_version,
                 row_counts=row_counts,
                 data_ranges=data_ranges,
+                training_start=training_start,
+                training_end=training_end,
+                rows_removed_by_time_window=rows_removed_by_time_window,
             )
             _atomic_json(manifest_path, snapshot.as_dict())
 
@@ -708,13 +810,14 @@ class TrainingSnapshotBridge:
         for snapshot in snapshots[max(1, int(keep)) :]:
             directory = snapshot.manifest_path.parent
             try:
-                os.chmod(
-                    snapshot.database_path,
-                    stat.S_IWRITE | stat.S_IREAD,
+                _remove_snapshot_tree(directory)
+            except Exception:
+                logger.exception(
+                    "Training snapshot retention failed without deleting the "
+                    "source directory in place: %s",
+                    directory,
                 )
-            except OSError:
-                pass
-            shutil.rmtree(directory, ignore_errors=True)
+                continue
             removed.append(snapshot.dataset_id)
         return removed
 

@@ -19,6 +19,7 @@ from smog_ai.hourly.temporal import interpolate_temporally
 from smog_ai.nlp.interpreter import IntentInterpreter
 from smog_ai.nlp.models import AirQualityIntent, InterpretationResult
 from smog_ai.observability.bridge import ObservabilityBridge
+from smog_ai.observability.own_store import prepare_interaction_payload
 from smog_ai.places.base import PlaceResolver, ResolvedPlace
 from smog_ai.processing.matching import haversine_km
 from smog_ai.spatial.colors import category_for, unit_for
@@ -55,6 +56,10 @@ class QueryRequest(BaseModel):
     target_time: datetime | None = None
     time_source: str | None = Field(default=None, max_length=64)
     parameters: list[str] | None = Field(default=None, min_length=1, max_length=16)
+    parser_provider: str | None = Field(default=None, max_length=64)
+    parser_model: str | None = Field(default=None, max_length=120)
+    parser_prompt_tokens: int | None = Field(default=None, ge=0)
+    parser_completion_tokens: int | None = Field(default=None, ge=0)
     requested_view: Literal[
         "forecast", "current", "comparison", "daily_profile"
     ] = "forecast"
@@ -187,6 +192,9 @@ class ForecastSelection(BaseModel):
     station_contributions: list[dict[str, Any]] = Field(default_factory=list)
     temporal_source_times: list[datetime] = Field(default_factory=list)
     temporal_components: list[dict[str, Any]] = Field(default_factory=list)
+    quality_status: str = "accepted"
+    experimental: bool = False
+    experimental_reason: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class QueryResponse(BaseModel):
@@ -735,6 +743,9 @@ class ForecastQueryService:
             signed_error=selected.get("signed_error"),
             absolute_error=selected.get("absolute_error"),
             model_version=selected.get("model_version"),
+            quality_status=str(selected.get("quality_status") or "accepted"),
+            experimental=bool(selected.get("experimental", False)),
+            experimental_reason=list(selected.get("experimental_reason") or []),
             time_distance_minutes=round(abs((selected_time - target_utc).total_seconds()) / 60, 1),
             prediction_source="station_forecast",
             unit=unit_for(parameter),
@@ -976,6 +987,22 @@ class ForecastQueryService:
                 ),
                 temporal_source_times=source_times,
                 temporal_components=temporal_components,
+                quality_status=str(
+                    (selected_surface.get("metadata") or {}).get(
+                        "quality_status", "accepted"
+                    )
+                ),
+                experimental=bool(
+                    (selected_surface.get("metadata") or {}).get(
+                        "experimental", False
+                    )
+                ),
+                experimental_reason=list(
+                    (selected_surface.get("metadata") or {}).get(
+                        "experimental_reason"
+                    )
+                    or []
+                ),
             ),
             selected_surface,
         )
@@ -1218,6 +1245,9 @@ class ForecastQueryService:
             parts.append(f"{label}: {value_text}{confidence}")
         local_target = intent.target_time.isoformat(timespec="minutes")
         exact = all(row.exact_time_match for row in forecasts) if forecasts else False
+        experimental_parameters = [
+            row.parameter for row in forecasts if row.experimental
+        ]
         if intent.requested_view == "daily_profile":
             timing = (
                 "Nie podano dokładnej godziny; wartości na mapie są punktem startowym, "
@@ -1234,12 +1264,20 @@ class ForecastQueryService:
                 timing = "Termin został dopasowany dokładnie do prognozy godzinowej."
             else:
                 timing = "Dla podanego terminu nie ma kompletnego dokładnego pakietu godzinowego."
+        quality_note = (
+            " Wyniki eksperymentalne: "
+            + ", ".join(experimental_parameters)
+            + "; aktywny model nie przeszedł wszystkich miękkich progów jakości."
+            if experimental_parameters
+            else ""
+        )
         return (
             f"{place.name}, termin {local_target}: " + ", ".join(parts) + ". "
             f"Najbliższa stacja referencyjna to {station.station_name} "
             f"({station.distance_km or 0:.1f} km). {timing} "
             "To prognoza dla dokładnych współrzędnych, obliczona z wersjonowanych "
             "prognoz stacyjnych odczytanych przez skonfigurowany Bridge danych."
+            + quality_note
         )
 
     def preview(
@@ -1378,10 +1416,18 @@ class ForecastQueryService:
                             "Użyto punktu, czasu i parametrów zatwierdzonych przez użytkownika."
                         ],
                     ),
-                    provider="confirmed_structured_request",
-                    model=None,
+                    provider=(
+                        request.parser_provider or "confirmed_structured_request"
+                    ),
+                    model=request.parser_model,
                     latency_ms=0.0,
+                    prompt_tokens=request.parser_prompt_tokens,
+                    completion_tokens=request.parser_completion_tokens,
                     fallback_used=False,
+                    raw_response={
+                        "usage_source": "carried_from_query_preview",
+                        "confirmed_structured_request": True,
+                    },
                 )
             else:
                 interpretation = self.interpreter.interpret(
@@ -1490,6 +1536,11 @@ class ForecastQueryService:
                     warnings.append(
                         f"Pewność interpolacji {row.parameter} w tej lokalizacji jest niska ({row.confidence:.0%})."
                     )
+                if row.experimental:
+                    warnings.append(
+                        f"{row.parameter}: wynik eksperymentalny — aktywny model "
+                        "nie przeszedł wszystkich miękkich progów jakości."
+                    )
 
             primary_parameter = requested_parameters[0]
             primary_surface = surfaces.get(primary_parameter)
@@ -1579,12 +1630,9 @@ class ForecastQueryService:
                 time_validation=time_validation,
             )
             root.update(
-                output={
-                    "intent": response.intent.model_dump(mode="json"),
-                    "place": response.place.model_dump(mode="json"),
-                    "station": response.station.model_dump(mode="json"),
-                    "forecasts": [item.model_dump(mode="json") for item in response.forecasts],
-                },
+                output=prepare_interaction_payload(
+                    response.model_dump(mode="json")
+                ),
                 metadata={
                     "prompt_template_version": self.prompt_template_version,
                     "llm_provider": interpretation.provider,

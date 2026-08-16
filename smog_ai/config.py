@@ -537,7 +537,7 @@ class HourlyTrainingProfileConfig(BaseModel):
     cross_fit_folds: int = Field(default=2, ge=2, le=12)
     algorithms: dict[str, list[str]] = Field(default_factory=dict)
     fit_quantiles: bool = False
-    max_wall_time_seconds: int = Field(default=1800, ge=60, le=172800)
+    max_wall_time_seconds: int = Field(default=7200, ge=60, le=172800)
 
     @field_validator("maximum_training_days_by_target")
     @classmethod
@@ -592,7 +592,7 @@ class HourlyTrainingPolicyConfig(BaseModel):
                 "precipitation_mm": ["hurdle_hist_gradient_boosting"],
             },
             fit_quantiles=False,
-            max_wall_time_seconds=1800,
+            max_wall_time_seconds=7200,
         )
     )
     full: HourlyTrainingProfileConfig = Field(
@@ -611,7 +611,7 @@ class HourlyTrainingPolicyConfig(BaseModel):
             cross_fit_folds=4,
             algorithms={},
             fit_quantiles=True,
-            max_wall_time_seconds=7200,
+            max_wall_time_seconds=14400,
         )
     )
 
@@ -954,6 +954,7 @@ class HealthConfig(BaseModel):
     minimum_free_disk_gb: float = 2.0
     max_last_collection_age_hours: int = 6
     max_last_forecast_age_hours: int = 8
+    max_last_training_age_hours: int = 12
     publication_probe_enabled: bool = True
     source_api_probe_enabled: bool = False
     object_storage_probe_enabled: bool = True
@@ -1339,6 +1340,7 @@ def _apply_environment_overrides(payload: dict[str, Any]) -> None:
         ("SMOG_AI_MLFLOW_EXPERIMENT", ("mlflow", "experiment_name")),
         ("SMOG_AI_MLFLOW_UI_URL", ("mlflow", "ui_url")),
         ("SMOG_AI_MLFLOW_PUBLISH_COMPARISON", ("mlflow", "publish_comparison_to_object_storage")),
+        ("SMOG_AI_MAX_LAST_TRAINING_AGE_HOURS", ("health", "max_last_training_age_hours")),
     ]
     for environment_name, path in mapping:
         value = os.getenv(environment_name)
@@ -1367,6 +1369,7 @@ def _apply_environment_overrides(payload: dict[str, Any]) -> None:
             "SMOG_AI_HOURLY_MAX_SOURCE_DELAY",
             "SMOG_AI_HOURLY_MAX_MODEL_HORIZON",
             "SMOG_AI_TRAINING_SNAPSHOT_REUSE_MINUTES",
+            "SMOG_AI_MAX_LAST_TRAINING_AGE_HOURS",
         }:
             target[path[-1]] = int(value)
         else:

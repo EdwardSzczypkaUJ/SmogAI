@@ -144,16 +144,42 @@ def test_precipitation_gate_failure_is_quality_not_hard(
     assert result["hard_failures"] == []
     assert len(result["quality_failures"]) == 2
     assert result["serving_contract_passed"] is True
-    assert result["publication_ready"] is False
-    assert result["partial_success"] is True
-    assert result["passed"] is False
-    assert result["decision"] == "continue_without_experimental_targets"
+    assert result["publication_ready"] is True
+    assert result["partial_success"] is False
+    assert result["passed"] is True
+    assert result["decision"] == "continue_with_experimental_targets"
     assert result["approved_targets"] == ["PM10"]
     assert result["experimental_targets"] == [
         "precipitation_mm",
         "precipitation_probability",
     ]
     assert result["experimental_model_targets"] == ["precipitation_mm"]
+
+    with session_scope(engine) as session:
+        blocked = audit_latest_hourly_serving_contract(
+            session,
+            app_config,
+            allow_experimental_targets="none",
+        )
+    assert blocked["passed"] is False
+    assert blocked["decision"] == "continue_without_experimental_targets"
+    assert blocked["approved_targets"] == ["PM10"]
+
+    with session_scope(engine) as session:
+        forced = audit_latest_hourly_serving_contract(
+            session,
+            app_config,
+            allow_experimental_targets="precipitation_mm,precipitation_probability",
+        )
+    assert forced["passed"] is True
+    assert forced["publication_ready"] is True
+    assert forced["partial_success"] is False
+    assert forced["decision"] == "continue_with_experimental_targets"
+    assert forced["blocked_experimental_targets"] == []
+    assert forced["forced_experimental_targets"] == [
+        "precipitation_mm",
+        "precipitation_probability",
+    ]
 
 
 def test_technical_failure_still_blocks_every_target(
@@ -200,6 +226,53 @@ def test_technical_failure_still_blocks_every_target(
     assert result["publication_ready"] is False
     assert result["approved_targets"] == []
     assert result["decision"] == "stop_hard_failures"
+
+
+def test_flat_persistence_curve_is_warning_not_hard_failure(
+    engine,
+    app_config,
+) -> None:  # type: ignore[no-untyped-def]
+    app_config.hourly_forecasting.serving_horizon_hours = 2
+    app_config.hourly_forecasting.maximum_model_horizon_hours = 16
+    app_config.hourly_forecasting.spatial_targets = ["PM2.5"]
+
+    with session_scope(engine) as session:
+        station = AirStation(
+            source="GIOS",
+            source_id="flat-persistence-test",
+            station_name="Test",
+            city_name="Test",
+            latitude=50.0,
+            longitude=19.0,
+            active=True,
+            raw_json={},
+        )
+        session.add(station)
+        session.flush()
+        model = _add_model(
+            session,
+            parameter="PM2.5",
+            metrics={"quality_status": "accepted"},
+        )
+        model.algorithm = "persistence"
+        _add_forecasts(
+            session,
+            model=model,
+            station=station,
+            parameter="PM2.5",
+            values=[7.5, 7.5],
+        )
+        session.flush()
+        result = audit_latest_hourly_serving_contract(session, app_config)
+
+    assert result["hard_failures"] == []
+    assert result["passed"] is True
+    assert result["approved_targets"] == ["PM2.5"]
+    assert any(
+        row.get("reason") == "all_station_curves_flat"
+        and row.get("severity") == "quality_warning"
+        for row in result["warnings"]
+    )
 
 
 def test_no_forecasts_has_complete_decision_schema(

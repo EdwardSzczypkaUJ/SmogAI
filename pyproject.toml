@@ -33,6 +33,7 @@ dependencies = [
   "shapely>=2.0,<3",
   "pyproj>=3.7,<4",
   "pydeck>=0.9,<1",
+  "psutil>=6,<8",
 ]
 
 [project.optional-dependencies]

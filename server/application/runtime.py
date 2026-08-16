@@ -31,6 +31,16 @@ def create_artifact_repository_from_settings(
     )
 
 
+def create_analytics_repository_from_settings(
+    settings: ServerSettings,
+) -> ArtifactRepository:
+    store = create_object_store(settings.analytics_object_storage_config())
+    return ArtifactRepository(
+        store,
+        layout=ArtifactLayout(schema_version=settings.artifact_schema_version),
+    )
+
+
 def create_query_service(
     settings: ServerSettings,
     snapshot_source: SnapshotSource,
@@ -59,6 +69,7 @@ def create_query_service(
         ObjectStoreSpatialSource(
             repository,
             cache_ttl_seconds=settings.spatial_cache_ttl_seconds,
+            cache_max_items=settings.spatial_cache_max_items,
         )
         if settings.spatial_enabled
         else None

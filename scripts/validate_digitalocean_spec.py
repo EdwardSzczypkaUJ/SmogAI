@@ -27,6 +27,14 @@ SPACES_KEYS = {
     "SPACES_ACCESS_KEY_ID",
     "SPACES_SECRET_ACCESS_KEY",
 }
+ANALYTICS_SPACES_KEYS = {
+    "ANALYTICS_SPACES_BUCKET",
+    "ANALYTICS_SPACES_REGION",
+    "ANALYTICS_SPACES_ENDPOINT_URL",
+    "ANALYTICS_SPACES_PREFIX",
+    "ANALYTICS_SPACES_ACCESS_KEY_ID",
+    "ANALYTICS_SPACES_SECRET_ACCESS_KEY",
+}
 NLP_KEYS = {
     "SMOG_AI_LLM_PROVIDER",
     "SMOG_AI_LLM_MODEL",
@@ -45,6 +53,8 @@ OBSERVABILITY_KEYS = {
 SECRET_KEYS = {
     "SPACES_ACCESS_KEY_ID",
     "SPACES_SECRET_ACCESS_KEY",
+    "ANALYTICS_SPACES_ACCESS_KEY_ID",
+    "ANALYTICS_SPACES_SECRET_ACCESS_KEY",
     "LLM_API_KEY",
     "LANGFUSE_PUBLIC_KEY",
     "LANGFUSE_SECRET_KEY",
@@ -132,7 +142,10 @@ def validate(path: Path, *, allow_development: bool = False) -> dict[str, Any]:
         "SMOG_AI_SERVER_RATE_LIMIT_PER_MINUTE",
         "SMOG_AI_SPATIAL_ENABLED",
         "SMOG_AI_SPATIAL_CACHE_TTL_SECONDS",
+        "SMOG_AI_SPATIAL_CACHE_MAX_ITEMS",
         *SPACES_KEYS,
+        *ANALYTICS_SPACES_KEYS,
+        "ANALYTICS_RETENTION_DAYS",
         *NLP_KEYS,
         *OBSERVABILITY_KEYS,
     }
@@ -149,6 +162,12 @@ def validate(path: Path, *, allow_development: bool = False) -> dict[str, Any]:
         raise ValueError("api: app version must be 1.7.0")
     if str(api_env["SMOG_AI_SPATIAL_ENABLED"].get("value")).lower() != "true":
         raise ValueError("api must expose locally precomputed spatial surfaces")
+    if int(api_env["SMOG_AI_SPATIAL_CACHE_MAX_ITEMS"].get("value") or 0) < 1:
+        raise ValueError("api spatial cache must be explicitly bounded")
+    if api_env["ANALYTICS_SPACES_BUCKET"].get("value") == api_env["SMOG_AI_OBJECT_STORE_BUCKET"].get("value"):
+        raise ValueError("analytics and serving must use separate Spaces buckets")
+    if api_env["ANALYTICS_RETENTION_DAYS"].get("value") != "${ANALYTICS_RETENTION_DAYS}":
+        raise ValueError("analytics retention must be injected as ANALYTICS_RETENTION_DAYS")
     api_command = str(services["api"].get("run_command") or "").lower()
     for forbidden in (" train", " predict", "build-spatial-surfaces", "weekly-maintenance"):
         if forbidden in api_command:
@@ -182,7 +201,7 @@ def validate(path: Path, *, allow_development: bool = False) -> dict[str, Any]:
         )
     if dashboard_env["SMOG_AI_DASHBOARD_API_URL"].get("value") != "${api.PRIVATE_URL}/api/v1":
         raise ValueError("dashboard must call FastAPI over api.PRIVATE_URL")
-    leaked = (SPACES_KEYS | SECRET_KEYS) & dashboard_env.keys()
+    leaked = (SPACES_KEYS | ANALYTICS_SPACES_KEYS | SECRET_KEYS) & dashboard_env.keys()
     if leaked:
         raise ValueError(
             f"dashboard must not receive storage/LLM credentials; FastAPI is the adapter: {sorted(leaked)}"

@@ -564,8 +564,16 @@ class OpenAICompatibleIntentInterpreter:
                 provider=self.provider_name,
                 model=self.model,
                 latency_ms=(time.perf_counter() - started) * 1000,
-                prompt_tokens=usage.get("prompt_tokens"),
-                completion_tokens=usage.get("completion_tokens"),
+                prompt_tokens=(
+                    usage.get("prompt_tokens")
+                    if usage.get("prompt_tokens") is not None
+                    else usage.get("input_tokens")
+                ),
+                completion_tokens=(
+                    usage.get("completion_tokens")
+                    if usage.get("completion_tokens") is not None
+                    else usage.get("output_tokens")
+                ),
                 raw_response={"id": response.get("id"), "usage": usage},
             )
         except Exception as exc:

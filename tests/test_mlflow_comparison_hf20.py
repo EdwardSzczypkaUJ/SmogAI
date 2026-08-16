@@ -90,3 +90,43 @@ def test_model_comparison_includes_mlflow_candidate_runs(
     assert payload["candidate_run_count"] == 1
     assert payload["candidate_runs"][0]["run_id"] == "run-1"
     assert payload["tracking_error"] is None
+
+
+def test_model_comparison_recovers_nested_training_snapshot_provenance(
+    engine, app_config
+) -> None:  # type: ignore[no-untyped-def]
+    app_config.mlflow.comparison_path = (
+        app_config.paths.data_dir.parent / "reports" / "nested-comparison.json"
+    )
+    with session_scope(engine) as session:
+        session.add(
+            ModelVersion(
+                model_name="hourly-PM10-ridge",
+                algorithm="ridge",
+                parameter="PM10",
+                forecast_horizon=0,
+                semantic_version="2026.01.02-nested",
+                artifact_path="nested.joblib",
+                feature_columns_json=["horizon_hours"],
+                metrics_json={
+                    "mae": 1.5,
+                    "data_provenance": {
+                        "training_snapshot": {
+                            "dataset_id": "training-current",
+                            "database_sha256": "b" * 64,
+                        }
+                    },
+                },
+                training_data_start=datetime(2025, 1, 1, tzinfo=UTC),
+                training_data_end=datetime(2025, 12, 31, tzinfo=UTC),
+                active=True,
+            )
+        )
+        session.flush()
+        payload = export_model_comparison(
+            session, app_config, publish=False
+        )["payload"]
+
+    model = payload["models"][0]
+    assert model["metrics"]["dataset_id"] == "training-current"
+    assert model["metrics"]["dataset_sha256"] == "b" * 64

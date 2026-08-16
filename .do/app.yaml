@@ -92,6 +92,10 @@ services:
         value: "60"
         scope: RUN_TIME
         type: GENERAL
+      - key: SMOG_AI_SPATIAL_CACHE_MAX_ITEMS
+        value: "64"
+        scope: RUN_TIME
+        type: GENERAL
 
       # Generic S3-compatible ObjectStore Bridge configured for DigitalOcean Spaces.
       - key: SMOG_AI_OBJECT_STORE_BACKEND
@@ -120,6 +124,37 @@ services:
         type: SECRET
       - key: SPACES_SECRET_ACCESS_KEY
         value: ${SPACES_SECRET_ACCESS_KEY}
+        scope: RUN_TIME
+        type: SECRET
+
+      # Interaction statistics and feedback use a separate private Spaces bucket.
+      # These credentials never reach the dashboard or the serving artifact store.
+      - key: ANALYTICS_SPACES_BUCKET
+        value: ${ANALYTICS_SPACES_BUCKET}
+        scope: RUN_TIME
+        type: GENERAL
+      - key: ANALYTICS_SPACES_REGION
+        value: ${ANALYTICS_SPACES_REGION}
+        scope: RUN_TIME
+        type: GENERAL
+      - key: ANALYTICS_SPACES_ENDPOINT_URL
+        value: ${ANALYTICS_SPACES_ENDPOINT_URL}
+        scope: RUN_TIME
+        type: GENERAL
+      - key: ANALYTICS_SPACES_PREFIX
+        value: ${ANALYTICS_SPACES_PREFIX}
+        scope: RUN_TIME
+        type: GENERAL
+      - key: ANALYTICS_RETENTION_DAYS
+        value: ${ANALYTICS_RETENTION_DAYS}
+        scope: RUN_TIME
+        type: GENERAL
+      - key: ANALYTICS_SPACES_ACCESS_KEY_ID
+        value: ${ANALYTICS_SPACES_ACCESS_KEY_ID}
+        scope: RUN_TIME
+        type: SECRET
+      - key: ANALYTICS_SPACES_SECRET_ACCESS_KEY
+        value: ${ANALYTICS_SPACES_SECRET_ACCESS_KEY}
         scope: RUN_TIME
         type: SECRET
 

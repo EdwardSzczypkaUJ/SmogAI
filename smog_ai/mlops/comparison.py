@@ -30,7 +30,22 @@ def _metric_subset(metrics: dict[str, Any]) -> dict[str, Any]:
         "dataset_id",
         "dataset_sha256",
     )
-    return {key: metrics.get(key) for key in keys}
+    result = {key: metrics.get(key) for key in keys}
+    provenance = dict(metrics.get("data_provenance") or {})
+    snapshot = dict(provenance.get("training_snapshot") or {})
+    result["dataset_id"] = (
+        result.get("dataset_id")
+        or provenance.get("dataset_id")
+        or snapshot.get("dataset_id")
+    )
+    result["dataset_sha256"] = (
+        result.get("dataset_sha256")
+        or provenance.get("dataset_sha256")
+        or provenance.get("database_sha256")
+        or snapshot.get("dataset_sha256")
+        or snapshot.get("database_sha256")
+    )
+    return result
 
 
 def build_model_comparison_payload(

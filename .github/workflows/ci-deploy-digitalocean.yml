@@ -6,6 +6,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      deploy_production:
+        description: "Potwierdzam reczne wdrozenie aplikacji produkcyjnej"
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -64,7 +70,9 @@ jobs:
   deploy:
     name: Deploy production
     needs: test
-    if: github.event_name != 'pull_request'
+    # Push i pull request uruchamiaja wyłącznie testy. Wdrozenie aplikacji jest
+    # osobna, reczna operacja wymagajaca jawnego potwierdzenia.
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy_production == true
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment:
@@ -81,13 +89,22 @@ jobs:
       SPACES_PREFIX: ${{ vars.SPACES_PREFIX || 'smog-ai/production' }}
       SPACES_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
       SPACES_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+      ANALYTICS_SPACES_BUCKET: ${{ vars.ANALYTICS_SPACES_BUCKET }}
+      ANALYTICS_SPACES_REGION: ${{ vars.ANALYTICS_SPACES_REGION || 'fra1' }}
+      ANALYTICS_SPACES_ENDPOINT_URL: ${{ vars.ANALYTICS_SPACES_ENDPOINT_URL || format('https://{0}.digitaloceanspaces.com', vars.ANALYTICS_SPACES_REGION || 'fra1') }}
+      ANALYTICS_SPACES_PREFIX: ${{ vars.ANALYTICS_SPACES_PREFIX || 'smog-ai/analytics' }}
+      ANALYTICS_RETENTION_DAYS: ${{ vars.ANALYTICS_RETENTION_DAYS || '90' }}
+      ANALYTICS_SPACES_ACCESS_KEY_ID: ${{ secrets.ANALYTICS_SPACES_ACCESS_KEY_ID }}
+      ANALYTICS_SPACES_SECRET_ACCESS_KEY: ${{ secrets.ANALYTICS_SPACES_SECRET_ACCESS_KEY }}
 
       SMOG_AI_LLM_PROVIDER: ${{ vars.SMOG_AI_LLM_PROVIDER || 'rule_based' }}
       SMOG_AI_LLM_MODEL: ${{ vars.SMOG_AI_LLM_MODEL || 'gpt-4.1-mini' }}
       SMOG_AI_LLM_BASE_URL: ${{ vars.SMOG_AI_LLM_BASE_URL || 'https://api.openai.com/v1' }}
       LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
 
-      SMOG_AI_OBSERVABILITY_BACKEND: ${{ vars.SMOG_AI_OBSERVABILITY_BACKEND || 'none' }}
+      # Produkcja wysyla slady odpowiedzi i oceny jakosci do Langfuse. Pelne
+      # prywatne archiwum w Spaces pozostaje niezaleznym kanalem zapasowym.
+      SMOG_AI_OBSERVABILITY_BACKEND: ${{ vars.SMOG_AI_OBSERVABILITY_BACKEND || 'langfuse' }}
       SMOG_AI_PROMPT_TEMPLATE_VERSION: ${{ vars.SMOG_AI_PROMPT_TEMPLATE_VERSION || 'air-query-v1' }}
       SMOG_AI_MLFLOW_UI_URL: ${{ vars.SMOG_AI_MLFLOW_UI_URL }}
       LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
@@ -105,6 +122,8 @@ jobs:
           required=(
             DIGITALOCEAN_ACCESS_TOKEN SPACES_BUCKET SPACES_REGION
             SPACES_ACCESS_KEY_ID SPACES_SECRET_ACCESS_KEY
+            ANALYTICS_SPACES_BUCKET ANALYTICS_SPACES_REGION
+            ANALYTICS_SPACES_ACCESS_KEY_ID ANALYTICS_SPACES_SECRET_ACCESS_KEY
           )
           for name in "${required[@]}"; do
             test -n "${!name:-}" || { echo "Missing GitHub variable/secret: $name"; exit 1; }
@@ -130,6 +149,13 @@ jobs:
           SPACES_PREFIX: ${{ env.SPACES_PREFIX }}
           SPACES_ACCESS_KEY_ID: ${{ env.SPACES_ACCESS_KEY_ID }}
           SPACES_SECRET_ACCESS_KEY: ${{ env.SPACES_SECRET_ACCESS_KEY }}
+          ANALYTICS_SPACES_BUCKET: ${{ env.ANALYTICS_SPACES_BUCKET }}
+          ANALYTICS_SPACES_REGION: ${{ env.ANALYTICS_SPACES_REGION }}
+          ANALYTICS_SPACES_ENDPOINT_URL: ${{ env.ANALYTICS_SPACES_ENDPOINT_URL }}
+          ANALYTICS_SPACES_PREFIX: ${{ env.ANALYTICS_SPACES_PREFIX }}
+          ANALYTICS_RETENTION_DAYS: ${{ env.ANALYTICS_RETENTION_DAYS }}
+          ANALYTICS_SPACES_ACCESS_KEY_ID: ${{ env.ANALYTICS_SPACES_ACCESS_KEY_ID }}
+          ANALYTICS_SPACES_SECRET_ACCESS_KEY: ${{ env.ANALYTICS_SPACES_SECRET_ACCESS_KEY }}
           SMOG_AI_LLM_PROVIDER: ${{ env.SMOG_AI_LLM_PROVIDER }}
           SMOG_AI_LLM_MODEL: ${{ env.SMOG_AI_LLM_MODEL }}
           SMOG_AI_LLM_BASE_URL: ${{ env.SMOG_AI_LLM_BASE_URL }}
@@ -176,6 +202,7 @@ jobs:
             echo "- URL: $APP_URL"
             echo "- Commit: $GITHUB_SHA"
             echo "- Storage: DigitalOcean Spaces ($SPACES_BUCKET/$SPACES_PREFIX)"
+            echo "- Private analytics: separate DigitalOcean Spaces bucket"
             echo "- NLP provider: $SMOG_AI_LLM_PROVIDER"
             echo "- Observability: $SMOG_AI_OBSERVABILITY_BACKEND"
             echo "- API health: $APP_URL/api/v1/health"

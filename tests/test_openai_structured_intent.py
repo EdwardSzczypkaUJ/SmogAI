@@ -53,8 +53,17 @@ class _FakeStructuredInterpreter(OpenAICompatibleIntentInterpreter):
         }
 
 
-def _interpreter() -> _FakeStructuredInterpreter:
-    return _FakeStructuredInterpreter(
+class _FakeResponsesUsageInterpreter(_FakeStructuredInterpreter):
+    def _request(self, body: dict[str, Any]) -> dict[str, Any]:
+        response = super()._request(body)
+        response["usage"] = {"input_tokens": 12, "output_tokens": 34}
+        return response
+
+
+def _interpreter(
+    interpreter_class: type[_FakeStructuredInterpreter] = _FakeStructuredInterpreter,
+) -> _FakeStructuredInterpreter:
+    return interpreter_class(
         model="gpt-4.1-mini",
         base_url="https://api.openai.com/v1",
         api_key="test-key",
@@ -83,6 +92,16 @@ def test_structured_output_preserves_primary_context_and_exact_minute() -> None:
     assert result.intent.reference_target_time is not None
     assert result.intent.reference_target_time.isoformat() == "2026-08-12T15:17:00+02:00"
     assert result.intent.time_precision == "exact_minute"
+
+
+def test_responses_style_usage_is_normalised_for_cost_reporting() -> None:
+    result = _interpreter(_FakeResponsesUsageInterpreter).interpret(
+        "Jutro w Mieroszowie o 15:17. PM10 i PM2.5.",
+        candidates=["Mieroszów"],
+        now=datetime(2026, 8, 11, 0, 0, tzinfo=UTC),
+    )
+    assert result.prompt_tokens == 12
+    assert result.completion_tokens == 34
 
 
 def test_rule_fallback_understands_okolo_godziny() -> None:

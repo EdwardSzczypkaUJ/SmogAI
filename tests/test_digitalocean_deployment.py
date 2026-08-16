@@ -28,6 +28,10 @@ def test_production_app_spec_uses_spaces_without_database_or_jobs() -> None:
     assert api_env["SMOG_AI_OBJECT_STORE_BACKEND"]["value"] == "spaces"
     assert api_env["SPACES_ACCESS_KEY_ID"]["type"] == "SECRET"
     assert api_env["SPACES_SECRET_ACCESS_KEY"]["type"] == "SECRET"
+    assert api_env["ANALYTICS_SPACES_ACCESS_KEY_ID"]["type"] == "SECRET"
+    assert api_env["ANALYTICS_SPACES_SECRET_ACCESS_KEY"]["type"] == "SECRET"
+    assert api_env["ANALYTICS_SPACES_BUCKET"]["value"] == "${ANALYTICS_SPACES_BUCKET}"
+    assert api_env["SMOG_AI_SPATIAL_CACHE_MAX_ITEMS"]["value"] == "64"
     assert api_env["SMOG_AI_LLM_PROVIDER"]["value"] == "${SMOG_AI_LLM_PROVIDER}"
     assert api_env["SMOG_AI_OBSERVABILITY_BACKEND"]["value"] == "${SMOG_AI_OBSERVABILITY_BACKEND}"
 
@@ -36,6 +40,8 @@ def test_production_app_spec_uses_spaces_without_database_or_jobs() -> None:
     assert "SPACES_ACCESS_KEY_ID" not in dashboard_env
     assert "SPACES_SECRET_ACCESS_KEY" not in dashboard_env
     assert "LLM_API_KEY" not in dashboard_env
+    assert "ANALYTICS_SPACES_ACCESS_KEY_ID" not in dashboard_env
+    assert "ANALYTICS_SPACES_SECRET_ACCESS_KEY" not in dashboard_env
 
 
 def test_development_spec_uses_separate_spaces_prefix_and_no_database() -> None:
@@ -63,8 +69,16 @@ def test_github_workflow_runs_tests_before_spaces_deploy() -> None:
     assert "SPACES_ACCESS_KEY_ID" in text
     assert "SPACES_SECRET_ACCESS_KEY" in text
     assert "SPACES_BUCKET" in text
+    assert "ANALYTICS_SPACES_ACCESS_KEY_ID" in text
+    assert "ANALYTICS_SPACES_SECRET_ACCESS_KEY" in text
+    assert "ANALYTICS_SPACES_BUCKET" in text
     assert "fromJson(steps.deploy.outputs.app).live_url" in text
     assert "concurrency:" in text
+    assert "github.event_name == 'workflow_dispatch'" in text
+    assert "inputs.deploy_production == true" in text
+    assert "if: github.event_name != 'pull_request'" not in text
+    assert "SMOG_AI_OBSERVABILITY_BACKEND || 'langfuse'" in text
+    assert "ANALYTICS_RETENTION_DAYS || '90'" in text
 
 
 def test_local_fastapi_windows_helpers_are_present_and_portable() -> None:
@@ -123,4 +137,6 @@ def test_app_platform_is_read_only_and_dashboard_uses_precomputed_pydeck_surface
     assert "locally" not in dashboard.lower() or "lokalnie" in dashboard.lower()
     api = (ROOT / "server" / "api" / "main.py").read_text(encoding="utf-8")
     assert "/api/v1/spatial/surface" in api
+    assert "^[A-Za-z0-9_.-]{1,64}$" in api
+    assert "published_parameters" in api
     assert "/api/v1/spatial/manifest" in api

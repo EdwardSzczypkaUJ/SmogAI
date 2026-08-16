@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import time
@@ -88,8 +89,13 @@ from smog_ai.processing.backfill import backfill_gios
 from smog_ai.processing.matching import match_stations
 from smog_ai.processing.validation import validate_data
 from smog_ai.publishing.publisher import retry_publications
+from smog_ai.publishing.serving_release import (
+    inspect_local_serving_release,
+    publish_local_serving_release,
+)
 from smog_ai.publishing.snapshot import build_snapshot_stage
 from smog_ai.reports.summary import build_report
+from smog_ai.reports.freshness import build_freshness_report, write_freshness_report
 from smog_ai.range_backfill import (
     RANGE_BACKFILL_STAGE_DEFAULT_SECONDS,
     RANGE_BACKFILL_STAGE_WEIGHTS,
@@ -105,6 +111,23 @@ from smog_ai.training_snapshot import (
     create_snapshot_engine,
     create_training_snapshot_bridge,
 )
+from smog_ai.training_delta import (
+    CONFIRMATION as TRAINING_DELTA_CONFIRMATION,
+    build_delta,
+    create_layered_sqlalchemy_engine,
+    fast_preflight_candidate,
+    layered_candidate_provenance,
+    plan_delta,
+    verify_candidate as verify_layered_candidate,
+)
+from smog_ai.training_compaction import (
+    COMPACTION_CONFIRMATION as TRAINING_COMPACTION_CONFIRMATION,
+    ROLLBACK_CONFIRMATION as TRAINING_COMPACTION_ROLLBACK_CONFIRMATION,
+    apply_compaction,
+    plan_compaction,
+    rollback_compaction,
+    verify_compaction,
+)
 
 app = typer.Typer(no_args_is_help=True, help="GIOŚ/IMGW Forecast Suite — lokalny pipeline i MLOps.")
 EXIT_SUCCESS = 0
@@ -114,6 +137,36 @@ EXIT_DATABASE = 3
 EXIT_PARTIAL = 4
 EXIT_LOCKED = 5
 EXIT_PUBLICATION = 6
+
+
+def _select_digitalocean_spaces_destination(config: AppConfig) -> dict[str, str]:
+    """Select SPACES_* destination even when local runtime overrides are active."""
+
+    values = {
+        "bucket": os.getenv("SPACES_BUCKET") or config.object_storage.bucket,
+        "region": os.getenv("SPACES_REGION") or config.object_storage.region,
+        "endpoint_url": os.getenv("SPACES_ENDPOINT_URL") or config.object_storage.endpoint_url,
+        "prefix": os.getenv("SPACES_PREFIX") or config.object_storage.prefix,
+    }
+    missing = [name for name in ("bucket", "region", "endpoint_url", "prefix") if not values[name]]
+    if missing:
+        raise ConfigurationError(
+            "DigitalOcean destination is incomplete. Missing: " + ", ".join(missing)
+        )
+    if not str(values["endpoint_url"]).lower().startswith("https://"):
+        raise ConfigurationError("SPACES_ENDPOINT_URL must use HTTPS.")
+    config.object_storage.backend = "spaces"
+    config.object_storage.bucket = str(values["bucket"])
+    config.object_storage.region = str(values["region"])
+    config.object_storage.endpoint_url = str(values["endpoint_url"]).rstrip("/")
+    config.object_storage.prefix = str(values["prefix"]).strip("/ ")
+    return {
+        "backend": "spaces",
+        "bucket": config.object_storage.bucket,
+        "region": config.object_storage.region,
+        "endpoint": config.object_storage.endpoint_url,
+        "prefix": config.object_storage.prefix,
+    }
 
 
 def _runtime(config_path: Path | None, env_path: Path | None, task: str) -> tuple[AppConfig, Engine]:
@@ -1226,6 +1279,16 @@ def command_create_training_snapshot(
         "--mirror-manifest/--no-mirror-manifest",
         help="Opublikuj mały manifest datasetu do ObjectStore/Spaces.",
     ),
+    training_start: datetime | None = typer.Option(
+        None,
+        "--training-start",
+        help="Włączny początek danych treningowych w ISO 8601 z timezone.",
+    ),
+    training_end: datetime | None = typer.Option(
+        None,
+        "--training-end",
+        help="Wyłączny koniec danych treningowych w ISO 8601 z timezone.",
+    ),
     config: Path | None = COMMON_CONFIG,
     env_file: Path | None = COMMON_ENV,
 ) -> None:
@@ -1258,6 +1321,8 @@ def command_create_training_snapshot(
                 targets=selected_targets,
                 progress=reporter,
                 mirror_manifest=mirror_manifest,
+                training_start=training_start,
+                training_end=training_end,
             )
         reporter.finish("success", detail=snapshot.as_dict())
         _emit({"status": "ok", "training_snapshot": snapshot.as_dict()})
@@ -1339,11 +1404,157 @@ def command_training_snapshot_status(
     )
 
 
+@app.command("training-delta-plan")
+def command_training_delta_plan(
+    profile: str = typer.Option("quick", "--profile"),
+    config: Path | None = COMMON_CONFIG,
+    env_file: Path | None = COMMON_ENV,
+) -> None:
+    """Plan the next incremental training layer without modifying data."""
+
+    cfg = load_config(config, env_file)
+    runtime_root = cfg.paths.data_dir.expanduser().resolve().parent
+    payload = plan_delta(runtime_root=runtime_root, profile=profile)
+    _emit(payload)
+    if payload.get("compaction_due"):
+        raise typer.Exit(EXIT_CONFIG)
+
+
+@app.command("training-delta-build")
+def command_training_delta_build(
+    profile: str = typer.Option("quick", "--profile"),
+    confirmation: str = typer.Option(..., "--confirmation"),
+    config: Path | None = COMMON_CONFIG,
+    env_file: Path | None = COMMON_ENV,
+) -> None:
+    """Atomically build a delta; never change the production snapshot pointer."""
+
+    cfg = load_config(config, env_file)
+    runtime_root = cfg.paths.data_dir.expanduser().resolve().parent
+    payload = build_delta(
+        runtime_root=runtime_root,
+        profile=profile,
+        confirmation=confirmation,
+    )
+    _emit(payload)
+
+
+@app.command("training-delta-verify")
+def command_training_delta_verify(
+    profile: str = typer.Option("quick", "--profile"),
+    config: Path | None = COMMON_CONFIG,
+    env_file: Path | None = COMMON_ENV,
+) -> None:
+    """Verify base + deltas before model training."""
+
+    cfg = load_config(config, env_file)
+    runtime_root = cfg.paths.data_dir.expanduser().resolve().parent
+    payload = verify_layered_candidate(
+        runtime_root=runtime_root,
+        profile=profile,
+    )
+    _emit(payload)
+    if payload.get("candidate_ready_for_training_integration") is not True:
+        raise typer.Exit(EXIT_CONFIG)
+
+
+@app.command("training-delta-preflight")
+def command_training_delta_preflight(
+    profile: str = typer.Option("quick", "--profile"),
+    config: Path | None = COMMON_CONFIG,
+    env_file: Path | None = COMMON_ENV,
+) -> None:
+    """Quickly verify delta hashes and the live change-journal boundary."""
+
+    cfg = load_config(config, env_file)
+    runtime_root = cfg.paths.data_dir.expanduser().resolve().parent
+    payload = fast_preflight_candidate(
+        runtime_root=runtime_root,
+        profile=profile,
+    )
+    _emit(payload)
+    if payload.get("status") != "ready":
+        raise typer.Exit(EXIT_CONFIG)
+
+
+@app.command("training-compaction-plan")
+def command_training_compaction_plan(
+    profile: str = typer.Option("quick", "--profile"),
+    config: Path | None = COMMON_CONFIG,
+    env_file: Path | None = COMMON_ENV,
+) -> None:
+    """Plan base + delta compaction without modifying any file."""
+
+    cfg = load_config(config, env_file)
+    runtime_root = cfg.paths.data_dir.expanduser().resolve().parent
+    payload = plan_compaction(runtime_root=runtime_root, profile=profile)
+    _emit(payload)
+    if payload.get("status") != "ready":
+        raise typer.Exit(EXIT_CONFIG)
+
+
+@app.command("training-compaction-apply")
+def command_training_compaction_apply(
+    profile: str = typer.Option("quick", "--profile"),
+    confirmation: str = typer.Option(..., "--confirmation"),
+    config: Path | None = COMMON_CONFIG,
+    env_file: Path | None = COMMON_ENV,
+) -> None:
+    """Build, verify and atomically activate a compacted snapshot."""
+
+    cfg = load_config(config, env_file)
+    runtime_root = cfg.paths.data_dir.expanduser().resolve().parent
+    _emit(
+        apply_compaction(
+            runtime_root=runtime_root,
+            profile=profile,
+            confirmation=confirmation,
+        )
+    )
+
+
+@app.command("training-compaction-verify")
+def command_training_compaction_verify(
+    profile: str = typer.Option("quick", "--profile"),
+    config: Path | None = COMMON_CONFIG,
+    env_file: Path | None = COMMON_ENV,
+) -> None:
+    """Verify the active compacted generation and retained recovery assets."""
+
+    cfg = load_config(config, env_file)
+    runtime_root = cfg.paths.data_dir.expanduser().resolve().parent
+    payload = verify_compaction(runtime_root=runtime_root, profile=profile)
+    _emit(payload)
+    if payload.get("status") != "ok":
+        raise typer.Exit(EXIT_CONFIG)
+
+
+@app.command("training-compaction-rollback")
+def command_training_compaction_rollback(
+    profile: str = typer.Option("quick", "--profile"),
+    confirmation: str = typer.Option(..., "--confirmation"),
+    config: Path | None = COMMON_CONFIG,
+    env_file: Path | None = COMMON_ENV,
+) -> None:
+    """Restore the previous pointer if no post-compaction changes exist."""
+
+    cfg = load_config(config, env_file)
+    runtime_root = cfg.paths.data_dir.expanduser().resolve().parent
+    _emit(
+        rollback_compaction(
+            runtime_root=runtime_root,
+            profile=profile,
+            confirmation=confirmation,
+        )
+    )
+
+
 def _run_snapshot_training(
     *,
     selected: str,
     targets: str | None,
     snapshot_selector: str,
+    candidate_only: bool,
     config: Path | None,
     env_file: Path | None,
 ) -> None:
@@ -1356,6 +1567,14 @@ def _run_snapshot_training(
             f"snapshot-train-hourly-{selected}",
         )
         cfg.hourly_forecasting.targets = _parse_hourly_targets(targets, cfg)
+        if candidate_only:
+            # Candidate-only is a local registry experiment.  It must never
+            # upload a model, publish a pointer or create a remote MLflow run.
+            cfg.object_storage.enabled = False
+            cfg.artifacts.upload_models = False
+            cfg.mlflow.enabled = False
+            cfg.mlflow.strict = False
+            cfg.mlflow.publish_comparison_to_object_storage = False
         selector = (snapshot_selector or cfg.training_snapshot.default_selector).strip()
         if not selector:
             selector = cfg.training_snapshot.default_selector
@@ -1377,14 +1596,32 @@ def _run_snapshot_training(
         ).start(task="preparing immutable training dataset")
 
         bridge = create_training_snapshot_bridge(cfg)
-        snapshot = bridge.resolve(selected, selector)
+        layered = selector.lower() == "layered"
+        snapshot = None if layered else bridge.resolve(selected, selector)
         snapshot_created = False
+
+        layered_provenance: dict[str, Any] | None = None
+        if layered:
+            runtime_root = cfg.paths.data_dir.expanduser().resolve().parent
+            verification = verify_layered_candidate(
+                runtime_root=runtime_root,
+                profile=selected,
+            )
+            if verification.get("candidate_ready_for_training_integration") is not True:
+                raise RuntimeError(
+                    "Layered training candidate failed verification: "
+                    + json.dumps(verification, ensure_ascii=False, default=str)
+                )
+            layered_provenance = layered_candidate_provenance(
+                runtime_root=runtime_root,
+                profile=selected,
+            )
 
         # ProcessLease normally renews its row in process_locks.  That is a
         # database write, so it must not run while sqlite3_backup() copies the
         # same live database.  The quiet lease keeps the OS mutex and owner row
         # but starts no heartbeat thread during the copy.
-        if selector != "live" and snapshot is None:
+        if not layered and selector != "live" and snapshot is None:
             with ProcessLease(
                 live_engine,
                 cfg,
@@ -1401,7 +1638,40 @@ def _run_snapshot_training(
         # Normal renewable locking starts only after the immutable copy exists.
         # Its writes can no longer restart the SQLite backup.
         with ProcessLease(live_engine, cfg, "snapshot-hourly-training"):
-            if selector == "live":
+            if layered:
+                if layered_provenance is None:  # pragma: no cover
+                    raise RuntimeError("Layered candidate provenance was not resolved")
+                reporter.complete_stage(
+                    "snapshot",
+                    task=(
+                        "using verified layered dataset "
+                        f"{layered_provenance['dataset_id']}"
+                    ),
+                    detail=layered_provenance,
+                )
+                cfg.training.input_source = "database"
+                snapshot_engine = create_layered_sqlalchemy_engine(
+                    runtime_root=cfg.paths.data_dir.expanduser().resolve().parent,
+                    profile=selected,
+                )
+                with session_scope(live_engine) as live_session:
+                    with session_scope(snapshot_engine) as training_session:
+                        result = train_hourly_models(
+                            live_session,
+                            cfg,
+                            reporter,
+                            profile_name=selected,
+                            training_session=training_session,
+                            dataset_provenance=layered_provenance,
+                            commit_live_metadata=True,
+                            activation_policy=(
+                                "candidate_only"
+                                if candidate_only
+                                else "quality_gated"
+                            ),
+                        )
+                snapshot_payload = layered_provenance
+            elif selector == "live":
                 reporter.complete_stage(
                     "snapshot",
                     task="diagnostic live-database training selected",
@@ -1419,6 +1689,9 @@ def _run_snapshot_training(
                             "immutable": False,
                             "database_path": str(cfg.paths.database_path),
                         },
+                        activation_policy=(
+                            "candidate_only" if candidate_only else "quality_gated"
+                        ),
                     )
                 snapshot_payload: dict[str, Any] | None = None
             else:
@@ -1443,6 +1716,11 @@ def _run_snapshot_training(
                             training_session=training_session,
                             dataset_provenance=snapshot.as_dict(),
                             commit_live_metadata=True,
+                            activation_policy=(
+                                "candidate_only"
+                                if candidate_only
+                                else "quality_gated"
+                            ),
                         )
                 bridge.cleanup(profile=selected)
                 snapshot_payload = snapshot.as_dict()
@@ -1489,7 +1767,14 @@ def command_snapshot_train_hourly(
     snapshot: str = typer.Option(
         "auto",
         "--snapshot",
-        help="auto, latest, live albo konkretny dataset_id.",
+        help="auto, latest, layered, live albo konkretny dataset_id.",
+    ),
+    candidate_only: bool = typer.Option(
+        False,
+        "--candidate-only/--quality-gated-activation",
+        help=(
+            "Zapisz kandydatow i klasyfikacje, ale nie zmieniaj aktywnych modeli."
+        ),
     ),
     config: Path | None = COMMON_CONFIG,
     env_file: Path | None = COMMON_ENV,
@@ -1501,6 +1786,7 @@ def command_snapshot_train_hourly(
         selected=selected,
         targets=targets,
         snapshot_selector=snapshot,
+        candidate_only=candidate_only,
         config=config,
         env_file=env_file,
     )
@@ -1562,6 +1848,7 @@ def command_quick_retrain(
         selected="quick",
         targets=None,
         snapshot_selector=snapshot,
+        candidate_only=False,
         config=config,
         env_file=env_file,
     )
@@ -1581,6 +1868,7 @@ def command_full_retrain(
         selected="full",
         targets=None,
         snapshot_selector=snapshot,
+        candidate_only=False,
         config=config,
         env_file=env_file,
     )
@@ -1836,7 +2124,14 @@ def command_publish_spatial_surfaces(
 
 @app.command("build-snapshot")
 def command_snapshot(config: Path | None = COMMON_CONFIG, env_file: Path | None = COMMON_ENV) -> None:
-    _single_stage("build-snapshot", build_snapshot_stage, config, env_file)
+    _single_stage_with_progress(
+        "build-snapshot",
+        "snapshot",
+        build_snapshot_stage,
+        config,
+        env_file,
+        default_seconds=600.0,
+    )
 
 
 @app.command("publish")
@@ -1865,6 +2160,42 @@ def command_report(config: Path | None = COMMON_CONFIG, env_file: Path | None = 
     cfg, engine = _runtime(config, env_file, "report")
     with session_scope(engine) as session:
         _emit(build_report(session, cfg))
+
+
+@app.command("data-freshness-report")
+def command_data_freshness_report(
+    output_dir: Path | None = typer.Option(
+        None,
+        "--output-dir",
+        help="Katalog JSON/HTML; domyślnie <RuntimeRoot>/reports/freshness.",
+    ),
+    fail_on_stale: bool = typer.Option(
+        False,
+        "--fail-on-stale/--no-fail-on-stale",
+        help="Zwróć kod częściowy 4 dla stale/missing.",
+    ),
+    threshold_hours: float | None = typer.Option(
+        None,
+        "--threshold-hours",
+        min=0.1,
+        help="Opcjonalny wspólny próg fresh dla GIOS i IMGW (godziny).",
+    ),
+    config: Path | None = COMMON_CONFIG,
+    env_file: Path | None = COMMON_ENV,
+) -> None:
+    """Report measurement age and station coverage for every collected parameter."""
+
+    cfg, engine = _runtime(config, env_file, "data-freshness-report")
+    if threshold_hours is not None:
+        cfg.quality.stale_air_hours = threshold_hours
+        cfg.quality.stale_weather_hours = threshold_hours
+    destination = output_dir or (cfg.paths.logs_dir.parent / "reports" / "freshness")
+    with session_scope(engine) as session:
+        report = build_freshness_report(session, cfg)
+    report["files"] = write_freshness_report(report, destination)
+    _emit(report)
+    if fail_on_stale and report["overall_status"] in {"stale", "missing"}:
+        raise typer.Exit(EXIT_PARTIAL)
 
 
 @app.command("pipeline")
@@ -1967,6 +2298,70 @@ def command_upload_operational_data(
     env_file: Path | None = COMMON_ENV,
 ) -> None:
     _single_stage("upload-operational-data", export_operational_data, config, env_file)
+
+
+@app.command("publish-serving-release")
+def command_publish_serving_release(
+    source_root: Path = typer.Option(
+        ...,
+        "--source-root",
+        help="Lokalny katalog Object Store zawierający serving/latest.json.",
+    ),
+    digitalocean_destination: bool = typer.Option(
+        False,
+        "--digitalocean-destination/--configured-destination",
+        help="Wymuś Spaces i wartości SPACES_* zamiast lokalnych SMOG_AI_*.",
+    ),
+    config: Path | None = COMMON_CONFIG,
+    env_file: Path | None = COMMON_ENV,
+) -> None:
+    """Publish the verified local Serving v2 release to configured Spaces/S3."""
+
+    try:
+        cfg = load_config(config, env_file)
+        if digitalocean_destination:
+            _select_digitalocean_spaces_destination(cfg)
+        configure_logging(cfg.paths.logs_dir, task_name="publish-serving-release")
+        result = publish_local_serving_release(cfg, source_root)
+        _emit(result)
+    except ConfigurationError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(EXIT_CONFIG) from exc
+
+
+@app.command("digitalocean-serving-preflight")
+def command_digitalocean_serving_preflight(
+    source_root: Path = typer.Option(
+        ...,
+        "--source-root",
+        help="Lokalny Object Store zawierający zweryfikowane serving/latest.json.",
+    ),
+    output: Path | None = typer.Option(None, "--output", help="Opcjonalny raport JSON."),
+    config: Path | None = COMMON_CONFIG,
+    env_file: Path | None = COMMON_ENV,
+) -> None:
+    """Verify the exact release, Spaces destination and estimated upload delta."""
+
+    cfg = load_config(config, env_file)
+    _select_digitalocean_spaces_destination(cfg)
+    configure_logging(cfg.paths.logs_dir, task_name="digitalocean-serving-preflight")
+    result = inspect_local_serving_release(cfg, source_root, check_destination=True)
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(
+            json.dumps(result, ensure_ascii=False, indent=2, default=str) + "\n",
+            encoding="utf-8",
+        )
+    _emit(result)
+    if result["forbidden_payloads_present"] or not result["compressed_assets_only"]:
+        problems = [
+            *result.get("forbidden_objects", []),
+            *result.get("uncompressed_objects", []),
+        ]
+        raise RuntimeError(
+            "Serving release contains forbidden or uncompressed payloads: "
+            + ", ".join(dict.fromkeys(str(item) for item in problems))
+        )
 
 
 @app.command("prepare-training-data")
@@ -2414,6 +2809,15 @@ def command_weekly_maintenance(
 @app.command("audit-hourly-serving-contract")
 def command_audit_hourly_serving_contract(
     output: Path | None = typer.Option(None, "--output"),
+    allow_experimental_targets: str | None = typer.Option(
+        None,
+        "--allow-experimental-targets",
+        help=(
+            "Opcjonalna jawna lista celów dopuszczonych mimo miękkiej bramki "
+            "jakości. Domyślnie wszystkie aktywne cele są publikowane i "
+            "oznaczane jako eksperymentalne. Podaj 'none', aby je wyłączyć."
+        ),
+    ),
     config: Path | None = COMMON_CONFIG,
     env_file: Path | None = COMMON_ENV,
 ) -> None:
@@ -2427,7 +2831,10 @@ def command_audit_hourly_serving_contract(
         )
     with session_scope(engine) as session:
         result = audit_latest_hourly_serving_contract(
-            session, cfg, output=output
+            session,
+            cfg,
+            output=output,
+            allow_experimental_targets=allow_experimental_targets,
         )
     _emit(result)
     if not result.get("passed"):

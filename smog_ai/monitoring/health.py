@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from smog_ai.artifacts.datasets import create_artifact_repository
 from smog_ai.config import AppConfig
 from smog_ai.data_validation import PanderaFrameValidator
-from smog_ai.database.models import CollectionError, ModelVersion, PublicationOutbox
+from smog_ai.database.models import CollectionError, ModelVersion, PublicationOutbox, TrainingRun
 from smog_ai.database.repository import get_application_state
 from smog_ai.time_utils import age_hours
 
@@ -59,6 +59,14 @@ def run_healthcheck(session: Session, engine: Engine, config: AppConfig) -> Heal
     )
     result.checks["forecast"] = _age_check(
         get_application_state(session, "last_forecast_at"), config.health.max_last_forecast_age_hours
+    )
+    latest_training = session.scalar(
+        select(func.max(TrainingRun.finished_at)).where(
+            TrainingRun.status.like("success%")
+        )
+    )
+    result.checks["training"] = _age_check(
+        latest_training, config.health.max_last_training_age_hours
     )
     pending = int(
         session.scalar(

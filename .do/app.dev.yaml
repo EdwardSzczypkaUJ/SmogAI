@@ -68,6 +68,10 @@ services:
         value: "30"
         scope: RUN_TIME
         type: GENERAL
+      - key: SMOG_AI_SPATIAL_CACHE_MAX_ITEMS
+        value: "64"
+        scope: RUN_TIME
+        type: GENERAL
       - key: SMOG_AI_OBJECT_STORE_BACKEND
         value: spaces
         scope: RUN_TIME
@@ -94,6 +98,34 @@ services:
         type: SECRET
       - key: SPACES_SECRET_ACCESS_KEY
         value: ${SPACES_SECRET_ACCESS_KEY}
+        scope: RUN_TIME
+        type: SECRET
+      - key: ANALYTICS_SPACES_BUCKET
+        value: ${ANALYTICS_SPACES_BUCKET}
+        scope: RUN_TIME
+        type: GENERAL
+      - key: ANALYTICS_SPACES_REGION
+        value: ${ANALYTICS_SPACES_REGION}
+        scope: RUN_TIME
+        type: GENERAL
+      - key: ANALYTICS_SPACES_ENDPOINT_URL
+        value: ${ANALYTICS_SPACES_ENDPOINT_URL}
+        scope: RUN_TIME
+        type: GENERAL
+      - key: ANALYTICS_SPACES_PREFIX
+        value: ${ANALYTICS_SPACES_PREFIX}
+        scope: RUN_TIME
+        type: GENERAL
+      - key: ANALYTICS_RETENTION_DAYS
+        value: ${ANALYTICS_RETENTION_DAYS}
+        scope: RUN_TIME
+        type: GENERAL
+      - key: ANALYTICS_SPACES_ACCESS_KEY_ID
+        value: ${ANALYTICS_SPACES_ACCESS_KEY_ID}
+        scope: RUN_TIME
+        type: SECRET
+      - key: ANALYTICS_SPACES_SECRET_ACCESS_KEY
+        value: ${ANALYTICS_SPACES_SECRET_ACCESS_KEY}
         scope: RUN_TIME
         type: SECRET
       - key: SMOG_AI_LLM_PROVIDER
