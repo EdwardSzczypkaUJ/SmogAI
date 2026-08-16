@@ -193,6 +193,68 @@ def test_query_uses_serving_v2_without_legacy_forecast_snapshot() -> None:
     )
 
 
+def test_second_query_resolves_witkow_airfield_instead_of_previous_katowice() -> None:
+    spatial = StaticSpatialSource(
+        surfaces=[_surface("PM10", 39.8), _surface("PM2.5", 21.2)]
+    )
+    resolver = PolishGazetteerResolver(
+        ROOT / "smog_ai" / "resources" / "polish_places.csv"
+    )
+    service = ForecastQueryService(
+        snapshot_source=StaticSnapshotSource(None),
+        spatial_source=spatial,
+        place_resolver=resolver,
+        interpreter=RuleBasedIntentInterpreter(timezone="Europe/Warsaw"),
+        observability=NoopObservability(),
+    )
+
+    first = service.preview(
+        QueryRequest(text="Jaka pogoda będzie jutro o 12:00 w Katowicach?"),
+        now=datetime(2026, 7, 30, 8, 0, tzinfo=UTC),
+    )
+    second = service.preview(
+        QueryRequest(text="Jaka pogoda będzie jutro o 12:00 na lotnisku w Witkowie?"),
+        now=datetime(2026, 7, 30, 8, 0, tzinfo=UTC),
+    )
+
+    assert first["place"]["name"] == "Katowice"
+    assert second["place"]["name"] == "Lotnisko Witków EPDS"
+    assert second["place"]["latitude"] == pytest.approx(50.79686)
+    assert second["place"]["longitude"] == pytest.approx(16.11448)
+    assert second["place"]["precision"] == "exact_poi"
+
+
+def test_rule_based_weather_question_selects_weather_outputs_not_pollution() -> None:
+    surface_rows = [
+        _surface("temperature_c", 18.0),
+        _surface("precipitation_probability", 0.4),
+        _surface("precipitation_mm", 1.2),
+        _surface("PM10", 39.8),
+    ]
+    service = ForecastQueryService(
+        snapshot_source=StaticSnapshotSource(None),
+        spatial_source=StaticSpatialSource(surfaces=surface_rows),
+        place_resolver=PolishGazetteerResolver(
+            ROOT / "smog_ai" / "resources" / "polish_places.csv"
+        ),
+        interpreter=RuleBasedIntentInterpreter(timezone="Europe/Warsaw"),
+        observability=NoopObservability(),
+    )
+
+    preview = service.preview(
+        QueryRequest(text="Jaka pogoda będzie jutro o 12:00 we Wrocławiu?"),
+        now=datetime(2026, 7, 30, 8, 0, tzinfo=UTC),
+    )
+
+    assert preview["place"]["name"] == "Wrocław"
+    assert preview["interpretation"]["provider"] == "rule_based"
+    assert preview["proposed_parameters"] == [
+        "temperature_c",
+        "precipitation_probability",
+        "precipitation_mm",
+    ]
+
+
 def test_query_coordinates_override_place_and_run_spatial_then_pchip() -> None:
     surfaces: list[dict] = []
     for target_hour, base_value in zip((12, 13, 14, 15), (10.0, 20.0, 30.0, 40.0), strict=True):

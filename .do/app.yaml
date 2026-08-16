@@ -156,8 +156,8 @@ services:
         scope: RUN_TIME
         type: SECRET
 
-      # The provider is variable-driven: openai_compatible when a key is configured,
-      # otherwise rule_based. Both implement the same IntentInterpreter Bridge.
+      # Production uses OpenAI. Missing credentials fail deployment instead of
+      # silently changing query semantics to the deterministic parser.
       - key: SMOG_AI_LLM_PROVIDER
         value: ${SMOG_AI_LLM_PROVIDER}
         scope: RUN_TIME
@@ -171,7 +171,7 @@ services:
         scope: RUN_TIME
         type: GENERAL
       - key: SMOG_AI_LLM_ALLOW_RULE_FALLBACK
-        value: "true"
+        value: ${SMOG_AI_LLM_ALLOW_RULE_FALLBACK}
         scope: RUN_TIME
         type: GENERAL
       - key: LLM_API_KEY

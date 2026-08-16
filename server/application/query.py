@@ -362,9 +362,28 @@ class ForecastQueryService:
             return cls._normalise_parameter_contract(request.parameters)
         proposed = cls._normalise_parameter_contract(intent.pollutants)
         text = request.text.casefold()
-        if any(word in text for word in ("temperatur", "ciepł", "ciepl", "zimn", "pogod")):
-            if "temperature_c" not in proposed:
-                proposed.append("temperature_c")
+        generic_weather = any(
+            phrase in text for phrase in ("pogod", "warunki atmosferyczne")
+        )
+        explicit_pollution = any(
+            phrase in text
+            for phrase in (
+                "pm10",
+                "pm2.5",
+                "pm2,5",
+                "smog",
+                "zanieczyszcz",
+                "jakość powietrza",
+                "jakosc powietrza",
+            )
+        )
+        if generic_weather and not explicit_pollution:
+            proposed = [parameter for parameter in proposed if parameter.casefold() in WEATHER_TARGETS]
+        if (
+            any(word in text for word in ("temperatur", "ciepł", "ciepl", "zimn", "pogod"))
+            and "temperature_c" not in proposed
+        ):
+            proposed.append("temperature_c")
         if any(word in text for word in ("opad", "deszcz", "śnieg", "snieg", "pogod")):
             for parameter in ("precipitation_probability", "precipitation_mm"):
                 if parameter not in proposed:
@@ -378,11 +397,15 @@ class ForecastQueryService:
     ) -> list[str]:
         values: list[str] = []
         for raw in (manifest or {}).get("parameters") or []:
-            code = canonical_code(str(raw))
+            raw_code = str(raw).strip()
+            folded = raw_code.casefold()
+            code = (
+                folded
+                if folded in WEATHER_TARGETS or folded in WEATHER_DERIVED_TARGETS
+                else canonical_code(raw_code)
+            )
             if (
-                code not in WEATHER_TARGETS
-                and code not in WEATHER_DERIVED_TARGETS
-                and code != "UNKNOWN"
+                code != "UNKNOWN"
                 and code not in values
             ):
                 values.append(code)

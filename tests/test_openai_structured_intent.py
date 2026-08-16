@@ -10,6 +10,7 @@ import pytest
 from smog_ai.nlp.interpreter import (
     OpenAICompatibleIntentInterpreter,
     RuleBasedIntentInterpreter,
+    create_intent_interpreter,
 )
 from smog_ai.observability.bridge import NoopObservability
 from smog_ai.places.gazetteer import PolishGazetteerResolver
@@ -102,6 +103,24 @@ def test_responses_style_usage_is_normalised_for_cost_reporting() -> None:
     )
     assert result.prompt_tokens == 12
     assert result.completion_tokens == 34
+
+
+def test_openai_provider_is_reported_as_openai_not_generic_compatible() -> None:
+    interpreter = create_intent_interpreter(
+        provider="openai",
+        model="gpt-5.4-mini",
+        base_url="https://api.openai.com/v1",
+        api_key="test-key",
+        timeout_seconds=1,
+        max_retries=0,
+        temperature=0,
+        timezone="Europe/Warsaw",
+        allow_rule_based_fallback=False,
+        observability=NoopObservability(),
+    )
+
+    assert interpreter.provider_name == "openai"
+    assert interpreter.model == "gpt-5.4-mini"
 
 
 def test_rule_fallback_understands_okolo_godziny() -> None:

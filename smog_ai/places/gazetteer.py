@@ -17,6 +17,24 @@ def normalize_place(value: str) -> str:
     )
 
 
+def _polish_place_variants(value: str) -> set[str]:
+    """Return conservative nominative variants of common Polish locatives."""
+
+    normalized = normalize_place(value)
+    variants = {normalized}
+    if normalized.endswith("owie") and len(normalized) > 5:
+        variants.add(normalized[:-2])  # Witkowie -> Witkow, Krakowie -> Krakow
+    if normalized.endswith("aniu") and len(normalized) > 5:
+        variants.add(normalized[:-2])  # Poznaniu -> Poznan
+    if normalized.endswith("awiu") and len(normalized) > 5:
+        variants.add(normalized[:-2])  # Wroclawiu -> Wroclaw
+    if normalized.endswith("sku") and len(normalized) > 4:
+        variants.add(normalized[:-1])  # Gdansku -> Gdansk
+    if normalized.endswith("awie") and len(normalized) > 5:
+        variants.add(normalized[:-2] + "a")  # Warszawie -> Warszawa
+    return {variant for variant in variants if variant}
+
+
 class PolishGazetteerResolver:
     """Offline, deterministic place resolver with an extensible data source.
 
@@ -87,31 +105,38 @@ class PolishGazetteerResolver:
 
     @staticmethod
     def _score(query: str, row: dict[str, Any]) -> tuple[float, str]:
-        target = normalize_place(query)
+        targets = _polish_place_variants(query)
         names = [row["name"], *row.get("aliases", [])]
         best = 0.0
         matched = row["name"]
         for value in names:
-            normalized = normalize_place(str(value))
-            if not normalized:
-                continue
-            if target == normalized:
-                score = 1.0
-            elif target in normalized or normalized in target:
-                score = 0.95
-            else:
-                score = difflib.SequenceMatcher(None, target, normalized).ratio()
-                # Polish locative/genitive forms often differ only at the suffix.
-                common = 0
-                for left, right in zip(target, normalized, strict=False):
-                    if left != right:
-                        break
-                    common += 1
-                if common >= min(5, len(target), len(normalized)):
-                    score = max(score, 0.82 * common / max(len(target), len(normalized)) + 0.18)
-            if score > best:
-                best = score
-                matched = str(value)
+            names_normalized = _polish_place_variants(str(value))
+            for target in targets:
+                for normalized in names_normalized:
+                    if target == normalized:
+                        score = 1.0
+                    elif target in normalized or normalized in target:
+                        score = 0.95
+                    else:
+                        score = difflib.SequenceMatcher(
+                            None, target, normalized
+                        ).ratio()
+                        # Polish locative/genitive forms often differ only at
+                        # the suffix.
+                        common = 0
+                        for left, right in zip(target, normalized, strict=False):
+                            if left != right:
+                                break
+                            common += 1
+                        if common >= min(5, len(target), len(normalized)):
+                            score = max(
+                                score,
+                                0.82 * common / max(len(target), len(normalized))
+                                + 0.18,
+                            )
+                    if score > best:
+                        best = score
+                        matched = str(value)
         return best, matched
 
     def resolve(self, query: str) -> ResolvedPlace:

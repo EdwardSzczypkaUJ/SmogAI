@@ -111,6 +111,11 @@ def test_public_model_comparison_removes_training_and_mlflow_identifiers() -> No
                     "metrics": {
                         "mae": 1.5,
                         "rmse": 2.0,
+                        "candidate_scores": {
+                            "ridge": 1.5,
+                            "persistence": 2.5,
+                            "invalid": "not-a-number",
+                        },
                         "dataset_id": "private-dataset",
                         "dataset_sha256": "a" * 64,
                     },
@@ -135,7 +140,11 @@ def test_public_model_comparison_removes_training_and_mlflow_identifiers() -> No
     )
 
     encoded = str(payload)
-    assert payload["models"][0]["metrics"] == {"mae": 1.5, "rmse": 2.0}
+    assert payload["models"][0]["metrics"] == {
+        "mae": 1.5,
+        "rmse": 2.0,
+        "candidate_scores": {"ridge": 1.5, "persistence": 2.5},
+    }
     assert payload["candidate_runs"][0]["metrics"] == {"mae": 1.6}
     assert payload["privacy"]["model_binaries_included"] is False
     assert "private" not in encoded

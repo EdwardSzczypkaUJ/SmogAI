@@ -34,6 +34,7 @@ def test_production_app_spec_uses_spaces_without_database_or_jobs() -> None:
     assert api_env["ANALYTICS_SPACES_BUCKET"]["value"] == "${ANALYTICS_SPACES_BUCKET}"
     assert api_env["SMOG_AI_SPATIAL_CACHE_MAX_ITEMS"]["value"] == "64"
     assert api_env["SMOG_AI_LLM_PROVIDER"]["value"] == "${SMOG_AI_LLM_PROVIDER}"
+    assert api_env["SMOG_AI_LLM_ALLOW_RULE_FALLBACK"]["value"] == "${SMOG_AI_LLM_ALLOW_RULE_FALLBACK}"
     assert api_env["SMOG_AI_OBSERVABILITY_BACKEND"]["value"] == "${SMOG_AI_OBSERVABILITY_BACKEND}"
 
     dashboard_env = _envs(services["dashboard"])
@@ -83,6 +84,10 @@ def test_github_workflow_runs_tests_before_spaces_deploy() -> None:
     assert "if: github.event_name != 'pull_request'" not in text
     assert "SMOG_AI_OBSERVABILITY_BACKEND || 'langfuse'" in text
     assert "ANALYTICS_RETENTION_DAYS || '90'" in text
+    assert "vars.SMOG_AI_LLM_PROVIDER || 'openai'" in text
+    assert "vars.SMOG_AI_LLM_MODEL || 'gpt-5.4-mini'" in text
+    assert "vars.SMOG_AI_LLM_ALLOW_RULE_FALLBACK || 'false'" in text
+    assert 'test -n "${LLM_API_KEY:-}"' in text
 
 
 def test_local_fastapi_windows_helpers_are_present_and_portable() -> None:

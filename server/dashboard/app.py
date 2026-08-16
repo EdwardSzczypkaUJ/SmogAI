@@ -2227,10 +2227,24 @@ map_tab, model_tab, status_tab, cost_tab, docs_tab = st.tabs(
 )
 
 with map_tab:
+    if st.session_state.pop("hf21_reset_exact_point_mode", False):
+        st.session_state["use_exact_point"] = False
     use_exact_point = st.checkbox(
         "Użyj dokładnych współrzędnych zamiast miejsca z treści zapytania",
         key="use_exact_point",
     )
+    configured_provider = str(health.get("nlp_provider") or "unknown")
+    configured_model = str(health.get("nlp_model") or "—")
+    if configured_provider == "rule_based":
+        st.caption(
+            "Interpretacja zapytania: parser regułowy (bez OpenAI, bez tokenów, "
+            "koszt 0)."
+        )
+    else:
+        st.caption(
+            f"Interpretacja zapytania: {configured_provider} · model "
+            f"{configured_model}."
+        )
 
     # HF21_DASHBOARD_LOCATION_MODEL_UX_V2
     if use_exact_point:
@@ -2326,6 +2340,22 @@ with map_tab:
         )
 
     if submitted:
+        # A failed preview must never leave the previous place visible.  Clear
+        # every value belonging to the old confirmation before interpreting
+        # the new question (for example Katowice followed by Lotnisko Witków).
+        for state_key in (
+            "pending_query_confirmation",
+            "query_result",
+            "hf21_confirmation_token",
+            "hf21_confirmation_name",
+            "hf21_confirmation_latitude",
+            "hf21_confirmation_longitude",
+            "hf21_confirmation_time",
+            "hf21_confirmation_location_source",
+            "hf21_confirmation_time_source",
+            "hf21_confirmation_parameters",
+        ):
+            st.session_state.pop(state_key, None)
         with st.spinner("Rozpoznaję miejsce, termin i parametry…"):
             try:
                 query_payload = {"text": question}
@@ -2374,6 +2404,7 @@ with map_tab:
     if pending_confirmation:
         pending_result = pending_confirmation.get("result") or {}
         pending_intent = pending_result.get("intent") or {}
+        pending_interpretation = pending_result.get("interpretation") or {}
         pending_place = pending_result.get("place") or {}
         location_check = pending_result.get("location_validation") or {}
         time_check = pending_result.get("time_validation") or {}
@@ -2393,6 +2424,18 @@ with map_tab:
                 )
             }
         ] or ["PM10", "PM2.5"]
+        parser_provider = str(pending_interpretation.get("provider") or "unknown")
+        parser_model = str(pending_interpretation.get("model") or "—")
+        if parser_provider == "rule_based":
+            st.info(
+                "To zapytanie zinterpretował parser regułowy — OpenAI nie zostało "
+                "wywołane. Sprawdź poniżej rozpoznane miejsce, czas i parametry."
+            )
+        else:
+            st.info(
+                f"Parser zapytania: {parser_provider}; model: {parser_model}. "
+                "Sprawdź poniżej rozpoznane miejsce, czas i parametry."
+            )
 
         candidate_name = str(
             coordinate_candidate.get("name")
@@ -2818,6 +2861,9 @@ with map_tab:
                             st.session_state["requested_target_time"] = selected_row["target_time"]
                         st.session_state.pop("pending_query_confirmation", None)
                         st.session_state.pop("hf21_confirmation_token", None)
+                        # Exact-point mode is intentionally one-shot.  A later
+                        # text query must not silently reuse old coordinates.
+                        st.session_state["hf21_reset_exact_point_mode"] = True
                         st.rerun()
                     except Exception as exc:
                         st.error(f"Nie udało się zatwierdzić danych: {exc}")
@@ -3301,7 +3347,56 @@ def _candidate_frame(payload: dict[str, Any]) -> pd.DataFrame:
             "Dataset": params.get("dataset_id") or metrics.get("dataset_id"),
             "Run ID": run.get("run_id"),
             "Start": run.get("start_time"),
+            "Źródło": "historia MLflow",
         })
+    existing = {
+        (str(row.get("Target")), str(row.get("Model")))
+        for row in rows
+    }
+    for model in list(payload.get("models") or []):
+        metrics = dict(model.get("metrics") or {})
+        target = str(model.get("target") or "")
+        selected_provider = str(model.get("provider") or "")
+        for provider, score in dict(metrics.get("candidate_scores") or {}).items():
+            identity = (target, str(provider))
+            if not target or identity in existing:
+                continue
+            rows.append({
+                "Target": target,
+                "Model": str(provider),
+                "Profil": metrics.get("training_profile"),
+                "Wybrany": bool(model.get("active")) and str(provider) == selected_provider,
+                "Status": metrics.get("quality_status"),
+                "MAE": _model_quality_number(score),
+                "RMSE": (
+                    _model_quality_number(metrics.get("rmse"))
+                    if str(provider) == selected_provider
+                    else None
+                ),
+                "Bias": (
+                    _model_quality_number(metrics.get("bias"))
+                    if str(provider) == selected_provider
+                    else None
+                ),
+                "AUC": (
+                    _model_quality_number(metrics.get("roc_auc"))
+                    if str(provider) == selected_provider
+                    else None
+                ),
+                "Brier skill": (
+                    _model_quality_number(metrics.get("brier_skill_vs_climatology"))
+                    if str(provider) == selected_provider
+                    else None
+                ),
+                "Poprawa vs persistence": (
+                    _model_quality_number(metrics.get("improvement_vs_persistence"))
+                    if str(provider) == selected_provider
+                    else None
+                ),
+                "Start": model.get("created_at"),
+                "Źródło": "podsumowanie treningu",
+            })
+            existing.add(identity)
     frame = pd.DataFrame(rows)
     if not frame.empty:
         frame = frame.dropna(axis=1, how="all")
@@ -3337,6 +3432,11 @@ def render_ml_quality_overview() -> None:
         )
     active = list(active_payload.get("models") or [])
     candidates = _candidate_frame(comparison)
+    comparison_models = {
+        str(row.get("target")): dict(row)
+        for row in list(comparison.get("models") or [])
+        if row.get("active")
+    }
     targets = sorted({str(value) for value in candidates.get("Target", []) if value})
     # Serving v2, a nie karta modelu, jest źródłem prawdy o publicznych
     # parametrach.  Karty używają pola ``target``; poprzedni odczyt nieistniejącego
@@ -3543,15 +3643,26 @@ def render_ml_quality_overview() -> None:
         cards: list[dict[str, Any]] = []
         for row in active:
             card = dict(row.get("card") or {})
-            metrics = dict(card.get("metrics") or {})
+            comparison_model = comparison_models.get(str(row.get("target"))) or {}
+            metrics = {
+                **dict(card.get("metrics") or {}),
+                **dict(comparison_model.get("metrics") or {}),
+            }
             quality = _active_model_quality(row, manifest)
             cards.append({
                 "Parametr": row.get("target"), "Metoda": row.get("provider"),
                 "Wersja": row.get("model_version"), "MAE": metrics.get("mae"),
                 "RMSE": metrics.get("rmse"), "Decyzja": quality["label"],
                 "Publikowane wyjścia": ", ".join(_model_published_outputs(row)),
-                "Dane od": _local_time(card.get("training_data_start")),
-                "Dane do": _local_time(card.get("training_data_end")),
+                "Profil": row.get("training_profile") or metrics.get("training_profile"),
+                "Dane od": _local_time(
+                    card.get("training_data_start")
+                    or comparison_model.get("training_data_start")
+                ),
+                "Dane do": _local_time(
+                    card.get("training_data_end")
+                    or comparison_model.get("training_data_end")
+                ),
                 "Aktywowany": _local_time(row.get("activated_at")),
             })
         active_frame = pd.DataFrame(cards)
@@ -3572,7 +3683,27 @@ def render_ml_quality_overview() -> None:
                     )
                     if quality["reasons"]:
                         st.warning("; ".join(quality["reasons"]))
-                    st.json(row.get("card") or row, expanded=False)
+                    metric_columns = st.columns(4)
+                    metric_columns[0].metric(
+                        "MAE", "—" if metrics.get("mae") is None else f"{float(metrics['mae']):.3f}"
+                    )
+                    metric_columns[1].metric(
+                        "RMSE", "—" if metrics.get("rmse") is None else f"{float(metrics['rmse']):.3f}"
+                    )
+                    metric_columns[2].metric(
+                        "Bias", "—" if metrics.get("bias") is None else f"{float(metrics['bias']):.3f}"
+                    )
+                    improvement = _model_quality_number(
+                        metrics.get("improvement_vs_persistence")
+                    )
+                    metric_columns[3].metric(
+                        "Poprawa vs persistence",
+                        "—" if improvement is None else f"{improvement:.1%}",
+                    )
+                    st.caption(
+                        "Karta publiczna zawiera wyłącznie zagregowane metryki "
+                        "jakości; dane uczące i plik modelu pozostają lokalne."
+                    )
 
     with answer_tab:
         try:

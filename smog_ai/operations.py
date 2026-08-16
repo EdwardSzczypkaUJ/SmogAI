@@ -92,13 +92,36 @@ def build_public_operations_status(
     model_cards = []
     for model in active_models:
         metrics = model.metrics_json or {}
+        candidate_scores = {}
+        for provider, score in dict(metrics.get("candidate_scores") or {}).items():
+            try:
+                candidate_scores[str(provider)] = float(score)
+            except (TypeError, ValueError):
+                continue
         model_cards.append(
             {
                 "parameter": model.parameter,
                 "algorithm": model.algorithm,
                 "version": model.semantic_version,
                 "activated_at": _iso(model.activated_at),
+                "training_data_start": _iso(model.training_data_start),
+                "training_data_end": _iso(model.training_data_end),
+                "training_profile": metrics.get("training_profile"),
                 "quality_status": metrics.get("quality_status", "accepted"),
+                "metrics": {
+                    key: metrics.get(key)
+                    for key in (
+                        "mae",
+                        "rmse",
+                        "bias",
+                        "improvement_vs_persistence",
+                        "brier",
+                        "brier_skill_vs_climatology",
+                        "roc_auc",
+                    )
+                    if metrics.get(key) is not None
+                },
+                "candidate_scores": candidate_scores,
             }
         )
 

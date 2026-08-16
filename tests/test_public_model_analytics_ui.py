@@ -18,6 +18,11 @@ def test_dashboard_degrades_cleanly_without_optional_remote_services() -> None:
     assert "go.Heatmap" in source
     assert "go.Pie" in source
     assert "go.Scatterpolar" in source
+    assert "Interpretacja zapytania: parser regułowy" in source
+    assert "OpenAI nie zostało" in source
+    assert "podsumowanie treningu" in source
+    assert "Poprawa vs persistence" in source
+    assert "dane uczące i plik modelu pozostają lokalne" in source
 
 
 def test_serving_publication_includes_only_sanitised_model_statistics() -> None:

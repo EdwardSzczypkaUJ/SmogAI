@@ -206,11 +206,15 @@ def _canonical_available_parameters(
     values = available_parameters or ["PM10", "PM2.5"]
     output: list[str] = []
     for raw in values:
-        code = canonical_code(raw)
+        raw_code = str(raw).strip()
+        folded = raw_code.casefold()
+        code = (
+            folded
+            if folded in WEATHER_TARGETS or folded in WEATHER_DERIVED_TARGETS
+            else canonical_code(raw_code)
+        )
         if (
             code != "UNKNOWN"
-            and code not in WEATHER_TARGETS
-            and code not in WEATHER_DERIVED_TARGETS
             and code not in output
         ):
             output.append(code)
@@ -259,9 +263,29 @@ def _extract_air_parameters(
         available, parameter_aliases
     )
     selected: list[str] = []
+    normalized_text = _normalize(text)
+    if "pogod" in normalized_text or "warunk atmosfer" in normalized_text:
+        for code in (
+            "temperature_c",
+            "precipitation_probability",
+            "precipitation_mm",
+        ):
+            if code in available and code not in selected:
+                selected.append(code)
+    weather_aliases = {
+        "temperature_c": ("temperatura", "ciepło", "cieplo", "zimno"),
+        "precipitation_mm": ("opad", "deszcz", "śnieg", "snieg", "ile spadnie"),
+        "precipitation_probability": (
+            "prawdopodobieństwo opadu",
+            "prawdopodobienstwo opadu",
+            "czy będzie padać",
+            "czy bedzie padac",
+        ),
+    }
     for code in available:
         aliases = (
             *configured_aliases.get(code, ()),
+            *weather_aliases.get(code, ()),
             *common_aliases_for(code),
             code,
         )
@@ -365,6 +389,7 @@ class OpenAICompatibleIntentInterpreter:
         fallback: IntentInterpreter | None,
         observability: ObservabilityBridge,
         available_parameters: list[str] | tuple[str, ...] | None = None,
+        provider_name: str = "openai_compatible",
     ) -> None:
         if not api_key:
             raise ValueError("LLM API key is required")
@@ -380,6 +405,7 @@ class OpenAICompatibleIntentInterpreter:
         self.available_parameters = _canonical_available_parameters(
             available_parameters
         )
+        self.provider_name = provider_name
 
     def _request(self, body: dict[str, Any]) -> dict[str, Any]:
         transport = httpx.HTTPTransport(retries=self.max_retries)
@@ -629,5 +655,6 @@ def create_intent_interpreter(
             fallback=fallback if allow_rule_based_fallback else None,
             observability=observability,
             available_parameters=available_parameters,
+            provider_name=provider,
         )
     raise ValueError(f"Unsupported NLP provider: {provider}")

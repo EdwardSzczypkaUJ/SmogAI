@@ -65,11 +65,21 @@ def _metric_subset(metrics: dict[str, Any]) -> dict[str, Any]:
 def _public_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
     """Return quality statistics safe for the public Serving application."""
 
-    return {
+    result = {
         key: metrics.get(key)
         for key in PUBLIC_MODEL_METRIC_KEYS
         if metrics.get(key) is not None
     }
+    candidate_scores = dict(metrics.get("candidate_scores") or {})
+    safe_scores: dict[str, float] = {}
+    for provider, score in candidate_scores.items():
+        try:
+            safe_scores[str(provider)] = float(score)
+        except (TypeError, ValueError):
+            continue
+    if safe_scores:
+        result["candidate_scores"] = safe_scores
+    return result
 
 
 def build_public_model_comparison_payload(payload: dict[str, Any]) -> dict[str, Any]:

@@ -27,7 +27,62 @@ class ObjectStoreModelSource:
     )
     backend_name: str = "object-store-models"
 
+    def _serving_manifest_models(self) -> list[dict[str, Any]]:
+        """Read public model cards embedded in the Serving v2 manifest.
+
+        The public application does not require model binaries or their object
+        pointers.  The manifest contains the safe subset prepared locally.
+        """
+
+        try:
+            pointer = self.repository.get_json(
+                self.repository.layout.latest_spatial_pointer
+            )
+            manifest_key = str(pointer.get("manifest_key") or "")
+            if not manifest_key:
+                return []
+            manifest = self.repository.get_json(manifest_key)
+        except (ObjectNotFoundError, FileNotFoundError, KeyError, TypeError):
+            return []
+        result: list[dict[str, Any]] = []
+        for raw in list(dict(manifest.get("operations") or {}).get("models") or []):
+            row = dict(raw or {})
+            target = str(row.get("parameter") or "")
+            if not target:
+                continue
+            quality_status = row.get("quality_status") or "accepted"
+            metrics = dict(row.get("metrics") or {})
+            metrics["quality_status"] = quality_status
+            result.append(
+                {
+                    "target": target,
+                    "model_version": row.get("version"),
+                    "provider": row.get("algorithm"),
+                    "activated_at": row.get("activated_at"),
+                    "training_data_start": row.get("training_data_start"),
+                    "training_data_end": row.get("training_data_end"),
+                    "training_profile": row.get("training_profile"),
+                    "candidate_scores": dict(row.get("candidate_scores") or {}),
+                    "forecast_mode": "horizon-conditioned-hourly",
+                    "source": "serving_v2_manifest",
+                    "card": {
+                        "target": target,
+                        "provider": row.get("algorithm"),
+                        "model_version": row.get("version"),
+                        "activated_at": row.get("activated_at"),
+                        "training_data_start": row.get("training_data_start"),
+                        "training_data_end": row.get("training_data_end"),
+                        "training_profile": row.get("training_profile"),
+                        "metrics": metrics,
+                    },
+                }
+            )
+        return result
+
     def active_models(self) -> list[dict[str, Any]]:
+        manifest_models = self._serving_manifest_models()
+        if manifest_models:
+            return manifest_models
         result: list[dict[str, Any]] = []
         for target in self.targets:
             pointer_key = self.repository.layout.active_hourly_model_pointer(target)
