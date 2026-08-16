@@ -173,10 +173,14 @@ jobs:
           print_deploy_logs: true
 
       - name: Smoke test FastAPI and Streamlit
+        if: steps.deploy.outcome == 'success'
         env:
-          APP_URL: ${{ fromJson(steps.deploy.outputs.app).live_url }}
+          APP_JSON: ${{ steps.deploy.outputs.app }}
         run: |
           set -euo pipefail
+          APP_URL="$(python -c 'import json, os; print(json.loads(os.environ["APP_JSON"])["live_url"])')"
+          test -n "$APP_URL"
+          echo "DEPLOYED_APP_URL=$APP_URL" >> "$GITHUB_ENV"
           echo "Application URL: $APP_URL"
           for attempt in $(seq 1 36); do
             if curl --fail --silent --show-error --max-time 20 "$APP_URL/api/v1/health" > health.json; then
@@ -193,9 +197,9 @@ jobs:
           curl --fail --silent --show-error --max-time 25 "$APP_URL/" > /dev/null
 
       - name: Deployment summary
-        env:
-          APP_URL: ${{ fromJson(steps.deploy.outputs.app).live_url }}
+        if: steps.deploy.outcome == 'success'
         run: |
+          APP_URL="$DEPLOYED_APP_URL"
           {
             echo "## DigitalOcean deployment"
             echo ""

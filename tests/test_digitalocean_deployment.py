@@ -17,6 +17,7 @@ def test_production_app_spec_uses_spaces_without_database_or_jobs() -> None:
     path = ROOT / ".do" / "app.yaml"
     validate(path)
     spec = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert not spec.get("disable_edge_cache")
     assert not spec.get("databases")
     assert not spec.get("jobs")
     services = {service["name"]: service for service in spec["services"]}
@@ -73,6 +74,9 @@ def test_github_workflow_runs_tests_before_spaces_deploy() -> None:
     assert "ANALYTICS_SPACES_SECRET_ACCESS_KEY" in text
     assert "ANALYTICS_SPACES_BUCKET" in text
     assert "fromJson(steps.deploy.outputs.app).live_url" in text
+    assert "if: steps.deploy.outcome == 'success'" in text
+    assert "APP_JSON: ${{ steps.deploy.outputs.app }}" in text
+    assert 'echo "DEPLOYED_APP_URL=$APP_URL" >> "$GITHUB_ENV"' in text
     assert "concurrency:" in text
     assert "github.event_name == 'workflow_dispatch'" in text
     assert "inputs.deploy_production == true" in text

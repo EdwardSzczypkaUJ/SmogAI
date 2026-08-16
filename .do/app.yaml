@@ -8,8 +8,6 @@ alerts:
   - rule: DEPLOYMENT_FAILED
   - rule: DOMAIN_FAILED
 
-disable_edge_cache: true
-
 services:
   - name: api
     environment_slug: python
