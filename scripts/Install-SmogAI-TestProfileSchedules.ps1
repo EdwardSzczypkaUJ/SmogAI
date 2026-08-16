@@ -27,7 +27,7 @@ function Set-EnvSetting([string[]]$Lines, [string]$Name, [string]$Value) {
         } else { $_ }
     })
     if (-not $Found) { $Result += "$Name=$Value" }
-    return ,$Result
+    return $Result
 }
 
 # Only non-secret cadence values are updated; existing credentials remain intact

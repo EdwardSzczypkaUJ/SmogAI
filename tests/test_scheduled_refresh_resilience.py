@@ -18,6 +18,17 @@ def test_scheduled_refresh_starts_mlflow_and_writes_independent_log() -> None:
     assert "$Code = $LASTEXITCODE" in source
 
 
+def test_scheduled_training_starts_mlflow_before_model_work() -> None:
+    source = (ROOT / "scripts" / "Invoke-SmogAI-ScheduledTraining.ps1").read_text(
+        encoding="utf-8-sig"
+    )
+    assert "Test-MlflowReady" in source
+    assert "Start-Process" in source
+    assert "MLFLOW_READY" in source
+    assert source.index("MLFLOW_READY") < source.index("snapshot-train-hourly")
+    assert "shared_training_lock_busy" in source
+
+
 def test_automation_telemetry_lock_does_not_abort_primary_work() -> None:
     source = (ROOT / "scripts" / "smog_ai_automation.py").read_text(
         encoding="utf-8-sig"
