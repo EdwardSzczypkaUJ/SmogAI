@@ -13,6 +13,20 @@ from smog_ai.config import AppConfig
 from smog_ai.database.models import ModelVersion
 from smog_ai.mlops.mlflow_bridge import create_mlflow_bridge
 
+PUBLIC_MODEL_METRIC_KEYS = (
+    "mae",
+    "rmse",
+    "bias",
+    "improvement_vs_persistence",
+    "brier",
+    "brier_skill_vs_climatology",
+    "brier_skill_vs_persistence",
+    "roc_auc",
+    "training_profile",
+    "budget_truncated",
+    "quality_status",
+)
+
 
 def _metric_subset(metrics: dict[str, Any]) -> dict[str, Any]:
     keys = (
@@ -46,6 +60,73 @@ def _metric_subset(metrics: dict[str, Any]) -> dict[str, Any]:
         or snapshot.get("database_sha256")
     )
     return result
+
+
+def _public_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
+    """Return quality statistics safe for the public Serving application."""
+
+    return {
+        key: metrics.get(key)
+        for key in PUBLIC_MODEL_METRIC_KEYS
+        if metrics.get(key) is not None
+    }
+
+
+def build_public_model_comparison_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Strip local training and MLflow identifiers from comparison metadata.
+
+    The local comparison remains detailed for diagnostics.  Only this reduced
+    representation may be written to the public Object Store prefix.
+    """
+
+    models = []
+    for raw in list(payload.get("models") or []):
+        row = dict(raw or {})
+        models.append(
+            {
+                "target": row.get("target"),
+                "provider": row.get("provider"),
+                "version": row.get("version"),
+                "active": bool(row.get("active")),
+                "created_at": row.get("created_at"),
+                "activated_at": row.get("activated_at"),
+                "training_data_start": row.get("training_data_start"),
+                "training_data_end": row.get("training_data_end"),
+                "metrics": _public_metrics(dict(row.get("metrics") or {})),
+            }
+        )
+
+    candidate_runs = []
+    for raw in list(payload.get("candidate_runs") or []):
+        row = dict(raw or {})
+        params = dict(row.get("params") or {})
+        candidate_runs.append(
+            {
+                "target": row.get("target") or params.get("target"),
+                "provider": row.get("provider") or params.get("provider"),
+                "profile": row.get("profile") or params.get("profile"),
+                "selected": bool(row.get("selected")),
+                "status": row.get("status"),
+                "start_time": row.get("start_time"),
+                "metrics": _public_metrics(dict(row.get("metrics") or {})),
+            }
+        )
+
+    return {
+        "schema_version": "1.0-public",
+        "generated_at_utc": payload.get("generated_at_utc"),
+        "models": models,
+        "candidate_runs": candidate_runs,
+        "candidate_run_count": len(candidate_runs),
+        "privacy": {
+            "raw_data_included": False,
+            "training_data_included": False,
+            "model_binaries_included": False,
+            "local_paths_included": False,
+            "dataset_identifiers_included": False,
+            "mlflow_run_identifiers_included": False,
+        },
+    }
 
 
 def build_model_comparison_payload(
@@ -145,14 +226,17 @@ def export_model_comparison(
                 "Model comparison publication requested while ObjectStore is disabled"
             )
         repository = create_artifact_repository(config)
+        public_payload = build_public_model_comparison_payload(payload)
         stored = repository.put_json(
             repository.layout.model_comparison_pointer,
-            payload,
+            public_payload,
         )
         published = {
             "object_key": stored.key,
             "checksum": stored.checksum,
             "size": stored.size,
+            "schema_version": public_payload["schema_version"],
+            "privacy": public_payload["privacy"],
         }
     return {
         "status": "ok",

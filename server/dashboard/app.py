@@ -1,9 +1,5 @@
-from __future__ import annotations
-
-# HF21_STREAMLIT_WIDTH_API_V2
-
-import hashlib
 import gzip
+import hashlib
 import json
 import math
 import os
@@ -16,13 +12,14 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import folium
 import pandas as pd
 import plotly.graph_objects as go
 import pydeck as pdk
 import streamlit as st
-import folium
 from streamlit_folium import st_folium
 
+# HF21_STREAMLIT_WIDTH_API_V2
 # HF21_COHERENT_UI_API_FIX_V1
 # HF21_MODEL_DECISION_UI_REPORT_MONITOR_V1
 
@@ -127,7 +124,12 @@ def _money(value: float) -> str:
     return label
 
 
-def _render_cost_center(quality: dict[str, Any], current_response: dict[str, Any]) -> None:
+def _render_cost_center(
+    quality: dict[str, Any],
+    current_response: dict[str, Any],
+    *,
+    nlp_provider: str,
+) -> None:
     primary = dict(quality.get("primary") or {})
     remote = dict(quality.get("remote") or {})
     interactions = dict(primary.get("interactions") or {})
@@ -135,6 +137,7 @@ def _render_cost_center(quality: dict[str, Any], current_response: dict[str, Any
         "provider": "—", "model": "—", "prompt_tokens": 0,
         "completion_tokens": 0, "usd": None, "priced": False,
     }
+    openai_enabled = str(nlp_provider).strip().lower() == "openai_compatible"
 
     st.subheader("Koszty i wykorzystanie usług")
     st.caption(
@@ -155,6 +158,17 @@ def _render_cost_center(quality: dict[str, Any], current_response: dict[str, Any
             prompt_total * OPENAI_INPUT_USD_PER_1M
             + completion_total * OPENAI_OUTPUT_USD_PER_1M
         ) / 1_000_000
+        if not openai_enabled:
+            st.info(
+                "OpenAI jest wyłączone w oszczędnym profilu testowym. "
+                "Zapytania interpretuje parser regułowy, dlatego użycie tokenów "
+                "i rzeczywisty koszt OpenAI wynoszą 0."
+            )
+        elif not int(interactions.get("tokenized_interactions") or 0):
+            st.warning(
+                "OpenAI jest skonfigurowane, ale agregat nie zawiera jeszcze "
+                "rekordów usage. Koszt nie zostanie oszacowany bez liczby tokenów."
+            )
         cards = st.columns(5)
         cards[0].metric("Zapytania zapisane", int(interactions.get("count") or 0))
         cards[1].metric("Z licznikiem tokenów", tokenized)
@@ -228,14 +242,22 @@ def _render_cost_center(quality: dict[str, Any], current_response: dict[str, Any
         langfuse_cards[1].metric("Koszt miesięczny", _money(LANGFUSE_MONTHLY_USD))
         langfuse_cards[2].metric("Oceny we własnym Store", feedback_count)
         langfuse_cards[3].metric("Zaimportowane z Langfuse", imported)
-        st.metric(
-            "Rekordy widoczne zdalnie w Langfuse",
-            int(remote.get("count") or 0) if remote.get("status") == "ok" else "niedostępne",
-        )
-        st.caption(
-            "Liczba rekordów zdalnych nie jest liczbą wszystkich requestów HTTP do "
-            "Langfuse. Pełny licznik wywołań wymaga osobnej telemetrii transportu."
-        )
+        if remote.get("status") == "ok":
+            st.metric(
+                "Rekordy widoczne zdalnie w Langfuse",
+                int(remote.get("count") or 0),
+            )
+            st.caption(
+                "Liczba rekordów zdalnych nie jest liczbą wszystkich requestów HTTP do "
+                "Langfuse. Pełny licznik wywołań wymaga osobnej telemetrii transportu."
+            )
+        elif remote.get("status") == "disabled":
+            st.info(
+                "Langfuse jest wyłączony w oszczędnym profilu testowym. "
+                "Oceny i statystyki pozostają we własnym prywatnym Object Store."
+            )
+        else:
+            st.warning("Połączenie z opcjonalnym Langfuse jest chwilowo niedostępne.")
 
     with digitalocean_tab:
         do_cards = st.columns(5)
@@ -280,10 +302,15 @@ def _render_cost_center(quality: dict[str, Any], current_response: dict[str, Any
         if average_openai is None and current_cost.get("usd") is not None:
             average_openai = float(current_cost["usd"])
             projection_basis = "bieżące zapytanie (agregat jeszcze pusty)"
-        projected_openai = (
-            average_openai * EXPECTED_MONTHLY_QUERIES
-            if average_openai is not None else None
-        )
+        if not openai_enabled:
+            average_openai = 0.0
+            projected_openai = 0.0
+            projection_basis = "OpenAI wyłączone; parser regułowy"
+        else:
+            projected_openai = (
+                average_openai * EXPECTED_MONTHLY_QUERIES
+                if average_openai is not None else None
+            )
         fixed_do = (
             DIGITALOCEAN_APP_MONTHLY_USD + DIGITALOCEAN_SPACES_MONTHLY_USD
             + DIGITALOCEAN_OVERAGE_MONTHLY_USD
@@ -3276,6 +3303,8 @@ def _candidate_frame(payload: dict[str, Any]) -> pd.DataFrame:
             "Start": run.get("start_time"),
         })
     frame = pd.DataFrame(rows)
+    if not frame.empty:
+        frame = frame.dropna(axis=1, how="all")
     if not frame.empty and "MAE" in frame:
         frame["Względny wynik"] = frame.groupby("Target")["MAE"].transform(
             lambda series: series.min() / series.replace(0, pd.NA)
@@ -3286,10 +3315,26 @@ def _candidate_frame(payload: dict[str, Any]) -> pd.DataFrame:
 def render_ml_quality_overview() -> None:
     try:
         active_payload = load_models()
+    except Exception as exc:
+        st.warning(f"Metadane aktywnych modeli są chwilowo niedostępne: {exc}")
+        return
+    comparison_error: Exception | None = None
+    try:
         comparison = load_model_comparison()
     except Exception as exc:
-        st.warning(f"Analityka modeli jest chwilowo niedostępna: {exc}")
-        return
+        comparison = {
+            "schema_version": "unavailable",
+            "models": [],
+            "candidate_runs": [],
+            "candidate_run_count": 0,
+        }
+        comparison_error = exc
+    if comparison_error is not None:
+        st.info(
+            "Aktywne modele i ich decyzje jakości są dostępne. "
+            "Ranking kandydatów pojawi się po publikacji oczyszczonego "
+            "artefaktu statystyk; modele i dane treningowe pozostają lokalne."
+        )
     active = list(active_payload.get("models") or [])
     candidates = _candidate_frame(comparison)
     targets = sorted({str(value) for value in candidates.get("Target", []) if value})
@@ -3373,6 +3418,9 @@ def render_ml_quality_overview() -> None:
             chart = subset.dropna(subset=[metric]).sort_values(
                 metric, ascending=lower_is_better
             )
+            for optional_column in ("Profil", "Status", "Run ID"):
+                if optional_column not in chart:
+                    chart[optional_column] = None
             chart["Etykieta"] = chart["Model"].astype(str) + chart["Wybrany"].map(
                 lambda selected: " ★" if selected else ""
             )
@@ -3424,6 +3472,9 @@ def render_ml_quality_overview() -> None:
             diagnostic_columns = st.columns(2)
             if subset["MAE"].notna().any() and subset["RMSE"].notna().any():
                 scatter_rows = subset.dropna(subset=["MAE", "RMSE"]).copy()
+                for optional_column in ("Profil", "Bias", "Run ID"):
+                    if optional_column not in scatter_rows:
+                        scatter_rows[optional_column] = None
                 scatter_figure = go.Figure()
                 for selected, rows in scatter_rows.groupby("Wybrany"):
                     scatter_figure.add_scatter(
@@ -3768,8 +3819,11 @@ def render_ml_quality_overview() -> None:
     with history_tab:
         history = candidates.copy()
         if not history.empty:
-            history["Start"] = pd.to_datetime(history["Start"], unit="ms", errors="coerce")
-            history = history.sort_values("Start", ascending=False)
+            if "Start" in history:
+                history["Start"] = pd.to_datetime(
+                    history["Start"], unit="ms", errors="coerce"
+                )
+                history = history.sort_values("Start", ascending=False)
             st.dataframe(
                 history[[column for column in (
                     "Start", "Target", "Model", "Profil", "Wybrany", "Status", "Dataset", "Run ID"
@@ -3938,6 +3992,7 @@ with cost_tab:
     _render_cost_center(
         cost_quality,
         _normalise_query_result(st.session_state.get("query_result")) or {},
+        nlp_provider=str(health.get("nlp_provider") or "unknown"),
     )
 
 

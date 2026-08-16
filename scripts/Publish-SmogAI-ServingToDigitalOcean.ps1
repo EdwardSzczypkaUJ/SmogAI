@@ -76,19 +76,25 @@ try {
         exit 0
     }
 
-    Write-Host 'E3/4 Atomic Serving v2 publication' -ForegroundColor Cyan
+    Write-Host 'E3/5 Atomic Serving v2 publication' -ForegroundColor Cyan
     & $Python -m smog_ai publish-serving-release `
         --source-root $SourceRoot --digitalocean-destination `
         --config $Config --env-file $EnvFile |
         Tee-Object -FilePath (Join-Path $ReportRoot '03-publication.json')
     if ($LASTEXITCODE -ne 0) { throw "Serving publication failed: $LASTEXITCODE" }
 
-    Write-Host 'E4/4 Remote pointer and storage verification' -ForegroundColor Cyan
+    Write-Host 'E4/5 Sanitised model-quality statistics' -ForegroundColor Cyan
+    & $Python -m smog_ai export-model-comparison --publish `
+        --config $Config --env-file $EnvFile |
+        Tee-Object -FilePath (Join-Path $ReportRoot '04-model-comparison.json')
+    if ($LASTEXITCODE -ne 0) { throw "Model comparison publication failed: $LASTEXITCODE" }
+
+    Write-Host 'E5/5 Remote pointer and storage verification' -ForegroundColor Cyan
     & $Python -m smog_ai storage-health --digitalocean-destination `
         --config $Config --env-file $EnvFile |
-        Tee-Object -FilePath (Join-Path $ReportRoot '04-storage-health.json')
+        Tee-Object -FilePath (Join-Path $ReportRoot '05-storage-health.json')
     if ($LASTEXITCODE -ne 0) { throw "Remote storage verification failed: $LASTEXITCODE" }
-    $RemoteHealth = Get-Content -LiteralPath (Join-Path $ReportRoot '04-storage-health.json') -Raw | ConvertFrom-Json
+    $RemoteHealth = Get-Content -LiteralPath (Join-Path $ReportRoot '05-storage-health.json') -Raw | ConvertFrom-Json
     $Published = Get-Content -LiteralPath (Join-Path $ReportRoot '03-publication.json') -Raw | ConvertFrom-Json
     if ($RemoteHealth.backend -notin @('s3','spaces')) {
         throw "Remote storage verification used unexpected backend: $($RemoteHealth.backend)"

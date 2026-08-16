@@ -4,7 +4,10 @@ from datetime import UTC, datetime
 
 from smog_ai.database.engine import session_scope
 from smog_ai.database.models import ModelVersion
-from smog_ai.mlops.comparison import export_model_comparison
+from smog_ai.mlops.comparison import (
+    build_public_model_comparison_payload,
+    export_model_comparison,
+)
 from smog_ai.mlops.mlflow_bridge import create_mlflow_bridge
 
 
@@ -90,6 +93,54 @@ def test_model_comparison_includes_mlflow_candidate_runs(
     assert payload["candidate_run_count"] == 1
     assert payload["candidate_runs"][0]["run_id"] == "run-1"
     assert payload["tracking_error"] is None
+
+
+def test_public_model_comparison_removes_training_and_mlflow_identifiers() -> None:
+    payload = build_public_model_comparison_payload(
+        {
+            "generated_at_utc": "2026-08-17T00:00:00+00:00",
+            "tracking_uri": "sqlite:///C:/private/mlflow.db",
+            "tracking_error": "private-host failed",
+            "models": [
+                {
+                    "target": "PM10",
+                    "provider": "ridge",
+                    "version": "safe-version",
+                    "active": True,
+                    "artifact_path": r"C:\private\models\pm10.joblib",
+                    "metrics": {
+                        "mae": 1.5,
+                        "rmse": 2.0,
+                        "dataset_id": "private-dataset",
+                        "dataset_sha256": "a" * 64,
+                    },
+                    "mlflow": {"run_id": "private-run"},
+                }
+            ],
+            "candidate_runs": [
+                {
+                    "run_id": "private-run",
+                    "target": "PM10",
+                    "provider": "ridge",
+                    "profile": "quick",
+                    "selected": True,
+                    "params": {
+                        "dataset_id": "private-dataset",
+                        "snapshot": r"C:\private\snapshot.sqlite",
+                    },
+                    "metrics": {"mae": 1.6, "dataset_id": "private-dataset"},
+                }
+            ],
+        }
+    )
+
+    encoded = str(payload)
+    assert payload["models"][0]["metrics"] == {"mae": 1.5, "rmse": 2.0}
+    assert payload["candidate_runs"][0]["metrics"] == {"mae": 1.6}
+    assert payload["privacy"]["model_binaries_included"] is False
+    assert "private" not in encoded
+    assert "artifact_path" not in encoded
+    assert "dataset" not in encoded.replace("dataset_identifiers_included", "")
 
 
 def test_model_comparison_recovers_nested_training_snapshot_provenance(
