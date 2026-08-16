@@ -161,6 +161,38 @@ def test_query_interpolates_exact_point_from_published_station_forecasts() -> No
     assert "dokładnych współrzędnych" in response.summary.lower()
 
 
+def test_query_uses_serving_v2_without_legacy_forecast_snapshot() -> None:
+    spatial = StaticSpatialSource(
+        surfaces=[_surface("PM10", 39.8), _surface("PM2.5", 21.2)]
+    )
+    service = ForecastQueryService(
+        snapshot_source=StaticSnapshotSource(None),
+        spatial_source=spatial,
+        place_resolver=PolishGazetteerResolver(
+            ROOT / "smog_ai" / "resources" / "polish_places.csv"
+        ),
+        interpreter=RuleBasedIntentInterpreter(timezone="Europe/Warsaw"),
+        observability=NoopObservability(),
+    )
+
+    preview = service.preview(
+        QueryRequest(text="Jutro sprawdź PM10 w Katowicach."),
+        now=datetime(2026, 7, 30, 8, 0, tzinfo=UTC),
+    )
+    response = service.ask(
+        QueryRequest(text="Wyjeżdżam jutro do Katowic, sprawdź PM10 i PM2.5."),
+        now=datetime(2026, 7, 30, 8, 0, tzinfo=UTC),
+    )
+
+    assert preview["place"]["name"] == "Katowice"
+    assert response.forecasts
+    assert response.snapshot_metadata["source"] == "serving_v2_surface_station_catalog"
+    assert all(
+        item.prediction_source == "published_station_forecasts_exact_point_idw"
+        for item in response.forecasts
+    )
+
+
 def test_query_coordinates_override_place_and_run_spatial_then_pchip() -> None:
     surfaces: list[dict] = []
     for target_hour, base_value in zip((12, 13, 14, 15), (10.0, 20.0, 30.0, 40.0), strict=True):

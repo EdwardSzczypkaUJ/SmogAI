@@ -266,6 +266,66 @@ class ForecastQueryService:
                 values.append(value)
         return values
 
+    def _latest_query_context(self) -> dict[str, Any] | None:
+        """Load legacy context or derive its small public subset from Serving v2.
+
+        Serving v2 intentionally does not publish the historical forecast snapshot.
+        Exact-point queries still need a station catalogue to select the nearest
+        reference station.  Every immutable surface already contains that public
+        catalogue, so use one representative surface instead of requiring the
+        legacy, much larger operational export.
+        """
+
+        snapshot = self.snapshot_source.latest()
+        if snapshot is not None:
+            return snapshot
+        if self.spatial_source is None:
+            return None
+        manifest = self.spatial_source.latest_manifest() or {}
+        entries = sorted(
+            (dict(row) for row in manifest.get("surfaces") or []),
+            key=lambda row: int(row.get("station_count") or 0),
+            reverse=True,
+        )
+        representative: dict[str, Any] | None = None
+        for entry in entries:
+            surface = self.spatial_source.surface_from_entry(entry)
+            if surface and surface.get("stations"):
+                representative = surface
+                break
+        if representative is None:
+            return None
+        stations: list[dict[str, Any]] = []
+        for raw in representative.get("stations") or []:
+            if (
+                raw.get("station_id") is None
+                or raw.get("latitude") is None
+                or raw.get("longitude") is None
+            ):
+                continue
+            station = dict(raw)
+            station.setdefault("measurements", {})
+            station.setdefault("weather", None)
+            station.setdefault("open_quality_flags", 0)
+            stations.append(station)
+        if not stations:
+            return None
+        release_id = manifest.get("release_id") or manifest.get("surface_set_id")
+        return {
+            "metadata": {
+                "publication_id": release_id,
+                "schema_version": manifest.get("schema_version"),
+                "generated_at": manifest.get("generated_at"),
+                "source": "serving_v2_surface_station_catalog",
+            },
+            "stations": stations,
+            "forecasts": [],
+            "metrics": [],
+            "quality_summary": {},
+            "air_parameter_catalog": manifest.get("air_parameter_catalog") or {},
+            "spatial": {"available": True, "release_id": release_id},
+        }
+
     @staticmethod
     def _normalise_parameter_contract(values: list[str] | tuple[str, ...]) -> list[str]:
         aliases = {
@@ -1295,7 +1355,7 @@ class ForecastQueryService:
 
         request_started = time.perf_counter()
         snapshot_started = time.perf_counter()
-        snapshot = self.snapshot_source.latest()
+        snapshot = self._latest_query_context()
         snapshot_ms = (time.perf_counter() - snapshot_started) * 1000
         if snapshot is None:
             raise LookupError("Brak opublikowanego snapshotu prognoz")
@@ -1368,7 +1428,7 @@ class ForecastQueryService:
         request_started = time.perf_counter()
         request_id = str(uuid.uuid4())
         snapshot_started = time.perf_counter()
-        snapshot = self.snapshot_source.latest()
+        snapshot = self._latest_query_context()
         snapshot_ms = (time.perf_counter() - snapshot_started) * 1000
         if snapshot is None:
             raise LookupError("Brak opublikowanego snapshotu prognoz")
