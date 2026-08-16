@@ -53,8 +53,8 @@ imgw_archive:
   skip_unchanged_cached_files: true
 
 quality:
-  stale_air_hours: 4
-  stale_weather_hours: 4
+  stale_air_hours: 8
+  stale_weather_hours: 8
   max_station_match_km: 80.0
   spike_absolute_pm10: 150.0
   spike_absolute_pm25: 100.0
@@ -533,6 +533,15 @@ locking:
   lease_seconds: 3600
   heartbeat_seconds: 30
   windows_mutex_prefix: Global\SmogAI
+
+operations:
+  profile: test
+  freshness_hours: 8
+  serving_refresh_hours: 8
+  regular_training_hours: 12
+  heavy_training_hours: 28
+  deferred_retry_minutes: 30
+  serving_release_retention: 3
 
 health:
   minimum_free_disk_gb: 2.0

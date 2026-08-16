@@ -22,6 +22,7 @@ from smog_ai.database.models import AirStation, Forecast, ModelVersion
 from smog_ai.domain import StageStats
 from smog_ai.progress import ProgressReporter, WeightedStageProgress
 from smog_ai.quality import quality_metadata
+from smog_ai.operations import build_public_operations_status
 from smog_ai.spatial.colors import rgba_for_values, unit_for
 from smog_ai.spatial.contracts import SpatialGrid, SpatialSurface
 from smog_ai.spatial.factory import create_spatial_interpolator
@@ -816,6 +817,13 @@ def build_spatial_surfaces(
             ),
             "surface_errors": errors,
         }
+        manifest["operations"] = build_public_operations_status(
+            session,
+            config,
+            source_origin_time=min(surface.origin_time for surface in surfaces),
+            generated_at=generated_at,
+            surface_count=len(surfaces),
+        )
         manifest_artifact = repository.put_json(
             repository.layout.spatial_manifest(surface_set_id),
             manifest,

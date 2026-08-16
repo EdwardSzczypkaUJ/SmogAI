@@ -809,6 +809,38 @@ def stages_for(
                             f"Pobieranie historii: {data_start or 'zakres domyślny'} — {data_end or 'teraz'}; parametry: {selected}; cache: lokalny."))
         stages.append(Stage("Ponowny audyt pokrycia", "data-range-audit", scope_args, 1, 60,
                             description="Kontrola pokrycia po uzupełnieniu historii."))
+    if profile == "serving":
+        stages += [
+            Stage("Budowa cech", "build-features", weight=4, timeout_minutes=240, progress_hint="feature"),
+            Stage("Generowanie prognoz stacyjnych", "predict", weight=4, timeout_minutes=180, progress_hint="predict"),
+            Stage(
+                "Generowanie lokalnego wydania Serving v2",
+                "build-spatial-surfaces",
+                weight=4,
+                timeout_minutes=180,
+                progress_hint="spatial",
+            ),
+            Stage(
+                "Walidacja lokalnego wydania Serving v2",
+                "validate-spatial-surfaces",
+                weight=1,
+                timeout_minutes=60,
+            ),
+            Stage(
+                "Kontrola lokalnego Object Store",
+                "storage-health",
+                weight=1,
+                timeout_minutes=30,
+            ),
+            Stage(
+                "Raport świeżości danych",
+                "data-freshness-report",
+                ("--threshold-hours", "8"),
+                weight=1,
+                timeout_minutes=30,
+            ),
+        ]
+        return stages
     training_profile = "full" if profile == "full" else "quick"
     target_args = ("--targets", targets) if targets else ()
     training_window_args: tuple[str, ...] = ()
@@ -2171,7 +2203,7 @@ def main() -> int:
     ap.add_argument("--runtime-root", default=r"C:\ProgramData\SmogAI")
     ap.add_argument("--config")
     ap.add_argument("--env-file")
-    ap.add_argument("--profile", choices=("quick", "normal", "medium", "full"), default="quick")
+    ap.add_argument("--profile", choices=("serving", "quick", "normal", "medium", "full"), default="quick")
     ap.add_argument("--targets", help="Lista celów oddzielona przecinkami, np. PM10,PM2.5,NO2")
     ap.add_argument(
         "--experimental-targets",

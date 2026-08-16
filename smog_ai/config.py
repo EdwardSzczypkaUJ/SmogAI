@@ -121,8 +121,8 @@ class ImgwArchiveConfig(BaseModel):
 class QualityConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    stale_air_hours: int = 4
-    stale_weather_hours: int = 4
+    stale_air_hours: int = 8
+    stale_weather_hours: int = 8
     max_station_match_km: float = 80.0
     spike_absolute_pm10: float = 150.0
     spike_absolute_pm25: float = 100.0
@@ -948,6 +948,20 @@ class LockingConfig(BaseModel):
     windows_mutex_prefix: str = r"Global\SmogAI"
 
 
+class OperationsConfig(BaseModel):
+    """Public, non-sensitive cadence and retention contract for the test app."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    profile: str = "test"
+    freshness_hours: float = Field(default=8.0, ge=1.0, le=168.0)
+    serving_refresh_hours: int = Field(default=8, ge=1, le=168)
+    regular_training_hours: int = Field(default=12, ge=1, le=720)
+    heavy_training_hours: int = Field(default=28, ge=1, le=720)
+    deferred_retry_minutes: int = Field(default=30, ge=5, le=720)
+    serving_release_retention: int = Field(default=3, ge=1, le=100)
+
+
 class HealthConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -996,6 +1010,7 @@ class AppConfig(BaseModel):
     mlflow: MLflowConfig = Field(default_factory=MLflowConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     locking: LockingConfig = Field(default_factory=LockingConfig)
+    operations: OperationsConfig = Field(default_factory=OperationsConfig)
     health: HealthConfig = Field(default_factory=HealthConfig)
     backup: BackupConfig = Field(default_factory=BackupConfig)
 
@@ -1341,6 +1356,14 @@ def _apply_environment_overrides(payload: dict[str, Any]) -> None:
         ("SMOG_AI_MLFLOW_UI_URL", ("mlflow", "ui_url")),
         ("SMOG_AI_MLFLOW_PUBLISH_COMPARISON", ("mlflow", "publish_comparison_to_object_storage")),
         ("SMOG_AI_MAX_LAST_TRAINING_AGE_HOURS", ("health", "max_last_training_age_hours")),
+        ("SMOG_AI_STALE_AIR_HOURS", ("quality", "stale_air_hours")),
+        ("SMOG_AI_STALE_WEATHER_HOURS", ("quality", "stale_weather_hours")),
+        ("SMOG_AI_FRESHNESS_HOURS", ("operations", "freshness_hours")),
+        ("SMOG_AI_SERVING_REFRESH_HOURS", ("operations", "serving_refresh_hours")),
+        ("SMOG_AI_REGULAR_TRAINING_HOURS", ("operations", "regular_training_hours")),
+        ("SMOG_AI_HEAVY_TRAINING_HOURS", ("operations", "heavy_training_hours")),
+        ("SMOG_AI_TRAINING_DEFERRED_RETRY_MINUTES", ("operations", "deferred_retry_minutes")),
+        ("SMOG_AI_SERVING_RELEASE_RETENTION", ("operations", "serving_release_retention")),
     ]
     for environment_name, path in mapping:
         value = os.getenv(environment_name)
@@ -1361,7 +1384,10 @@ def _apply_environment_overrides(payload: dict[str, Any]) -> None:
             "SMOG_AI_MLFLOW_PUBLISH_COMPARISON",
         }:
             target[path[-1]] = value.strip().lower() in {"1", "true", "yes", "on"}
-        elif environment_name in {"SMOG_AI_SPATIAL_GRID_RESOLUTION_KM"}:
+        elif environment_name in {
+            "SMOG_AI_SPATIAL_GRID_RESOLUTION_KM",
+            "SMOG_AI_FRESHNESS_HOURS",
+        }:
             target[path[-1]] = float(value)
         elif environment_name in {
             "SMOG_AI_HOURLY_MAX_HORIZON",
@@ -1370,6 +1396,13 @@ def _apply_environment_overrides(payload: dict[str, Any]) -> None:
             "SMOG_AI_HOURLY_MAX_MODEL_HORIZON",
             "SMOG_AI_TRAINING_SNAPSHOT_REUSE_MINUTES",
             "SMOG_AI_MAX_LAST_TRAINING_AGE_HOURS",
+            "SMOG_AI_STALE_AIR_HOURS",
+            "SMOG_AI_STALE_WEATHER_HOURS",
+            "SMOG_AI_SERVING_REFRESH_HOURS",
+            "SMOG_AI_REGULAR_TRAINING_HOURS",
+            "SMOG_AI_HEAVY_TRAINING_HOURS",
+            "SMOG_AI_TRAINING_DEFERRED_RETRY_MINUTES",
+            "SMOG_AI_SERVING_RELEASE_RETENTION",
         }:
             target[path[-1]] = int(value)
         else:

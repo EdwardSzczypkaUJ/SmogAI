@@ -2,8 +2,9 @@
 param(
     [string]$ProjectRoot,
     [string]$RuntimeRoot = 'C:\ProgramData\SmogAI',
-    [ValidateSet('quick','normal','medium','full')][string]$Profile = 'normal',
+    [ValidateSet('serving','quick','normal','medium','full')][string]$Profile = 'normal',
     [string]$ExperimentalTargets = '*',
+    [switch]$PublishDigitalOcean,
     [int]$MlflowPort = 5000,
     [int]$MlflowStartupTimeoutSeconds = 90
 )
@@ -42,7 +43,7 @@ function Test-MlflowReady {
 
 try {
     Write-ScheduleLog "START project=$ProjectRoot profile=$Profile pid=$PID"
-    if (-not (Test-MlflowReady)) {
+    if ($Profile -ne 'serving' -and -not (Test-MlflowReady)) {
         $MlflowRoot = Join-Path $RuntimeRoot 'mlflow'
         $ArtifactRoot = Join-Path $MlflowRoot 'artifacts'
         $DatabasePath = Join-Path $MlflowRoot 'mlflow.db'
@@ -67,7 +68,7 @@ try {
         }
         if (-not (Test-MlflowReady)) { throw "MLflow nie osiagnal gotowosci w ${MlflowStartupTimeoutSeconds}s; stderr=$MlflowErr" }
     }
-    Write-ScheduleLog 'MLFLOW_READY'
+    if ($Profile -ne 'serving') { Write-ScheduleLog 'MLFLOW_READY' }
     # Windows PowerShell 5 promotes any native stderr line to an ErrorRecord.
     # Warnings from telemetry must not abort the wrapper; the child exit code
     # remains the sole success/failure contract.
@@ -78,6 +79,17 @@ try {
         $Code = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $PreviousErrorAction
+    }
+    if ($Code -eq 0 -and $PublishDigitalOcean) {
+        $Publisher = Join-Path $ProjectRoot 'scripts\Publish-SmogAI-ServingToDigitalOcean.ps1'
+        Write-ScheduleLog 'PUBLICATION_START serving=v2 freshness_hours=8 retention=3'
+        & $Publisher -ProjectRoot $ProjectRoot -RuntimeRoot $RuntimeRoot `
+            -FreshnessThresholdHours 8 -SkipSeal `
+            -Approval 'PUBLISH VERIFIED SERVING V2' `
+            -RetainServingReleases 3 `
+            -RetentionApproval 'PRUNE OLD SERVING RELEASES' *>> $WrapperLog
+        $Code = $LASTEXITCODE
+        Write-ScheduleLog "PUBLICATION_FINISH exit=$Code"
     }
     Write-ScheduleLog "FINISH exit=$Code"
     exit $Code

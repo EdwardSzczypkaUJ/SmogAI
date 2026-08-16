@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
     [string]$ProjectRoot,
-    [ValidateSet('quick','normal','medium','full')][string]$Profile='quick',
+    [ValidateSet('serving','quick','normal','medium','full')][string]$Profile='quick',
     [string]$RuntimeRoot='C:\ProgramData\SmogAI',
     [string]$Targets,
     [string]$ExperimentalTargets,

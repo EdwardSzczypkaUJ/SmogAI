@@ -427,6 +427,27 @@ def spatial_manifest() -> JSONResponse:
     )
 
 
+@app.get("/api/v1/system/status")
+def public_system_status() -> JSONResponse:
+    """Return only the sanitised operational contract embedded in Serving v2."""
+
+    if query_service.spatial_source is None:
+        raise HTTPException(status_code=404, detail="Spatial surfaces are disabled")
+    manifest = query_service.spatial_source.latest_manifest()
+    payload = dict((manifest or {}).get("operations") or {})
+    if not payload:
+        raise HTTPException(
+            status_code=404,
+            detail="Operational status is unavailable for the active release",
+        )
+    payload["release_id"] = (manifest or {}).get("release_id")
+    payload["surface_set_id"] = (manifest or {}).get("surface_set_id")
+    return JSONResponse(
+        content=payload,
+        headers={"Cache-Control": "public, max-age=60, stale-while-revalidate=300"},
+    )
+
+
 @app.get("/api/v1/spatial/boundary")
 def spatial_boundary() -> JSONResponse:
     if query_service.spatial_source is None:

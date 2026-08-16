@@ -10,6 +10,9 @@ from smog_ai.config import AppConfig
 from smog_ai.domain import StageStats
 from smog_ai.storage.local import LocalObjectStore
 
+RETENTION_CONFIRMATION = "PRUNE OLD SERVING RELEASES"
+RELEASE_PREFIX = "serving/releases/release="
+
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
@@ -221,3 +224,78 @@ def publish_local_serving_release(config: AppConfig, source_root: Path) -> Stage
     source = ArtifactRepository(LocalObjectStore(source_root))
     destination = create_artifact_repository(config)
     return promote_serving_release(source, destination)
+
+
+def plan_serving_release_retention(
+    repository: ArtifactRepository,
+    *,
+    keep: int,
+) -> dict[str, Any]:
+    """Plan deletion of old immutable Serving v2 releases.
+
+    The active release from ``serving/latest.json`` is always protected even
+    when an unusual identifier would place it outside the newest ``keep`` IDs.
+    Static assets and the mutable pointer are outside the release prefix and
+    can never enter this plan.
+    """
+
+    if keep < 1:
+        raise ValueError("Serving release retention must keep at least one release.")
+    pointer = repository.get_json(repository.layout.latest_spatial_pointer)
+    active_release = str(pointer.get("release_id") or "")
+    if not active_release:
+        raise RuntimeError("Serving v2 pointer does not identify an active release.")
+
+    by_release: dict[str, list[Any]] = {}
+    for item in repository.store.list(RELEASE_PREFIX):
+        suffix = item.key[len(RELEASE_PREFIX) :]
+        release_id, separator, _ = suffix.partition("/")
+        if separator and release_id:
+            by_release.setdefault(release_id, []).append(item)
+
+    ordered = sorted(by_release, reverse=True)
+    retained = set(ordered[:keep])
+    retained.add(active_release)
+    deleted_releases = [release for release in ordered if release not in retained]
+    objects = [item for release in deleted_releases for item in by_release[release]]
+    return {
+        "active_release_id": active_release,
+        "keep": keep,
+        "retained_release_ids": sorted(retained, reverse=True),
+        "deleted_release_ids": deleted_releases,
+        "objects_to_delete": len(objects),
+        "bytes_to_delete": sum(int(item.size) for item in objects),
+        "keys": sorted(item.key for item in objects),
+    }
+
+
+def prune_serving_releases(
+    repository: ArtifactRepository,
+    *,
+    keep: int,
+    confirmation: str,
+) -> StageStats:
+    plan = plan_serving_release_retention(repository, keep=keep)
+    if confirmation != RETENTION_CONFIRMATION:
+        return StageStats(skipped=plan["objects_to_delete"], details={**plan, "applied": False})
+    for key in plan["keys"]:
+        if not key.startswith(RELEASE_PREFIX):
+            raise RuntimeError(f"Refusing to delete a non-release object: {key}")
+        repository.store.delete(key)
+    return StageStats(
+        downloaded=0,
+        inserted=0,
+        skipped=0,
+        details={**plan, "applied": True, "objects_deleted": len(plan["keys"])},
+    )
+
+
+def prune_remote_serving_releases(
+    config: AppConfig,
+    *,
+    keep: int,
+    confirmation: str,
+) -> StageStats:
+    repository = create_artifact_repository(config)
+    repository.ping()
+    return prune_serving_releases(repository, keep=keep, confirmation=confirmation)

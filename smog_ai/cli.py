@@ -90,7 +90,9 @@ from smog_ai.processing.matching import match_stations
 from smog_ai.processing.validation import validate_data
 from smog_ai.publishing.publisher import retry_publications
 from smog_ai.publishing.serving_release import (
+    RETENTION_CONFIRMATION,
     inspect_local_serving_release,
+    prune_remote_serving_releases,
     publish_local_serving_release,
 )
 from smog_ai.publishing.snapshot import build_snapshot_stage
@@ -2256,10 +2258,18 @@ def command_storage_init(
 
 @app.command("storage-health")
 def command_storage_health(
+    digitalocean_destination: bool = typer.Option(
+        False,
+        "--digitalocean-destination/--configured-destination",
+        help="Odczytaj Spaces z SPACES_* zamiast lokalnego Object Store.",
+    ),
     config: Path | None = COMMON_CONFIG,
     env_file: Path | None = COMMON_ENV,
 ) -> None:
-    cfg, _ = _runtime(config, env_file, "storage-health")
+    cfg = load_config(config, env_file)
+    if digitalocean_destination:
+        _select_digitalocean_spaces_destination(cfg)
+    configure_logging(cfg.paths.logs_dir, task_name="storage-health")
     repository = create_artifact_repository(cfg)
     repository.ping()
     latest_raw = None
@@ -2362,6 +2372,36 @@ def command_digitalocean_serving_preflight(
             "Serving release contains forbidden or uncompressed payloads: "
             + ", ".join(dict.fromkeys(str(item) for item in problems))
         )
+
+
+@app.command("prune-serving-releases")
+def command_prune_serving_releases(
+    keep: int = typer.Option(3, "--keep", min=1),
+    confirmation: str = typer.Option(
+        "",
+        "--confirmation",
+        help=f"Bezpiecznik zapisu: {RETENTION_CONFIRMATION}",
+    ),
+    digitalocean_destination: bool = typer.Option(
+        False,
+        "--digitalocean-destination/--configured-destination",
+    ),
+    config: Path | None = COMMON_CONFIG,
+    env_file: Path | None = COMMON_ENV,
+) -> None:
+    """Keep recent Serving v2 releases without touching pointer or static assets."""
+
+    cfg = load_config(config, env_file)
+    if digitalocean_destination:
+        _select_digitalocean_spaces_destination(cfg)
+    configure_logging(cfg.paths.logs_dir, task_name="prune-serving-releases")
+    _emit(
+        prune_remote_serving_releases(
+            cfg,
+            keep=keep,
+            confirmation=confirmation,
+        )
+    )
 
 
 @app.command("prepare-training-data")

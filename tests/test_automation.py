@@ -21,6 +21,19 @@ def test_every_profile_trains_hourly():
     assert "fill-missing-ranges" not in quick + normal + full
 
 
+def test_serving_profile_refreshes_release_without_training():
+    commands = [stage.command for stage in automation.stages_for("serving")]
+    assert "collect-gios" in commands
+    assert "collect-imgw" in commands
+    assert "build-features" in commands
+    assert "predict" in commands
+    assert "build-spatial-surfaces" in commands
+    assert "validate-spatial-surfaces" in commands
+    assert "data-freshness-report" in commands
+    assert not any("train" in command for command in commands)
+    assert "verify" not in commands
+
+
 def test_full_parameter_process_is_explicit_and_targets_are_forwarded():
     stages = automation.stages_for("full", "PM10,NO2", True)
     assert "fill-missing-ranges" in [stage.command for stage in stages]

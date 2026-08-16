@@ -572,6 +572,11 @@ def load_manifest() -> dict[str, Any]:
     return dict(_request_json("spatial/manifest"))
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def load_system_status() -> dict[str, Any]:
+    return dict(_request_json("system/status"))
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def load_boundary() -> dict[str, Any]:
     return dict(_request_json("spatial/boundary"))
@@ -2184,10 +2189,11 @@ except Exception as exc:
 # selectable without another dashboard patch.
 QUERY_PARAMETER_OPTIONS = _manifest_parameter_options(manifest)
 
-map_tab, model_tab, cost_tab, docs_tab = st.tabs(
+map_tab, model_tab, status_tab, cost_tab, docs_tab = st.tabs(
     [
         "🗺️ Mapa i prognoza",
         "🧠 Modele, MLOps i oceny",
+        "🟢 Status danych i modeli",
         "💰 Koszty i wykorzystanie",
         "📚 Jak to działa",
     ]
@@ -3787,6 +3793,133 @@ with model_tab:
         "pod mapą — metryki MAE/RMSE nie są oceną tekstu."
     )
     render_ml_quality_overview()
+
+
+with status_tab:
+    st.subheader("Status danych, Serving v2 i harmonogramów")
+    st.caption(
+        "Publiczny, oczyszczony status operacyjny. Nie zawiera danych uczących, "
+        "lokalnych ścieżek, identyfikatorów procesów ani sekretów."
+    )
+    try:
+        operations = load_system_status()
+    except Exception as exc:
+        st.warning(f"Status operacyjny nie jest jeszcze dostępny: {exc}")
+        operations = {}
+
+    if operations:
+        data_status = dict(operations.get("data") or {})
+        schedule = dict(operations.get("schedule") or {})
+        training_status = dict(operations.get("training") or {})
+        serving_status = dict(operations.get("serving") or {})
+
+        source_time = data_status.get("source_origin_time")
+        current_age = None
+        if source_time:
+            try:
+                parsed_source = datetime.fromisoformat(
+                    str(source_time).replace("Z", "+00:00")
+                )
+                current_age = max(
+                    0.0,
+                    (datetime.now(UTC) - parsed_source.astimezone(UTC)).total_seconds()
+                    / 3600.0,
+                )
+            except ValueError:
+                current_age = None
+        threshold = float(data_status.get("freshness_threshold_hours") or 8.0)
+        live_freshness = (
+            "fresh"
+            if current_age is not None and current_age <= threshold
+            else "warning"
+            if current_age is not None and current_age <= threshold * 2
+            else "stale"
+            if current_age is not None
+            else "unknown"
+        )
+        freshness_icon = {
+            "fresh": "🟢",
+            "warning": "🟠",
+            "stale": "🔴",
+        }.get(live_freshness, "⚪")
+
+        cards = st.columns(4)
+        cards[0].metric(
+            "Świeżość danych",
+            f"{freshness_icon} {live_freshness}",
+            "—" if current_age is None else f"wiek {current_age:.1f} h / limit {threshold:g} h",
+        )
+        cards[1].metric(
+            "Powierzchnie Serving v2",
+            int(serving_status.get("surface_count") or 0),
+            f"horyzont {int(serving_status.get('horizon_hours') or 0)} h",
+        )
+        cards[2].metric(
+            "Trening",
+            str(training_status.get("state_at_publication") or "unknown"),
+            str(training_status.get("concurrency_policy") or "—"),
+        )
+        cards[3].metric(
+            "Profil",
+            str(operations.get("profile") or "test"),
+            f"retencja {int(schedule.get('serving_release_retention') or 0)} release’y",
+        )
+
+        st.markdown("#### Harmonogram")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {"Proces": "Serving Refresh", "Interwał": f"{schedule.get('serving_refresh_hours')} h"},
+                    {"Proces": "Zwykły trening", "Interwał": f"{schedule.get('regular_training_hours')} h"},
+                    {"Proces": "Ciężki trening", "Interwał": f"{schedule.get('heavy_training_hours')} h"},
+                    {"Proces": "Ponowienie po blokadzie", "Interwał": f"{schedule.get('deferred_retry_minutes')} min"},
+                ]
+            ),
+            hide_index=True,
+            width="stretch",
+        )
+
+        st.markdown("#### Ostatnie i następne treningi")
+        training_rows = [
+            {
+                "Tryb": "Zwykły",
+                "Ostatni sukces": _local_time(training_status.get("last_regular_completed_at")),
+                "Następny termin": _local_time(training_status.get("next_regular_due_at")),
+            },
+            {
+                "Tryb": "Ciężki",
+                "Ostatni sukces": _local_time(training_status.get("last_heavy_completed_at")),
+                "Następny termin": _local_time(training_status.get("next_heavy_due_at")),
+            },
+        ]
+        st.dataframe(pd.DataFrame(training_rows), hide_index=True, width="stretch")
+
+        models = list(operations.get("models") or [])
+        st.markdown("#### Aktywne modele użyte przez release")
+        if models:
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "Parametr": row.get("parameter"),
+                            "Algorytm": row.get("algorithm"),
+                            "Wersja": row.get("version"),
+                            "Aktywowany": _local_time(row.get("activated_at")),
+                            "Status jakości": row.get("quality_status"),
+                        }
+                        for row in models
+                    ]
+                ),
+                hide_index=True,
+                width="stretch",
+            )
+        else:
+            st.info("Manifest nie zawiera jeszcze kart aktywnych modeli.")
+
+        st.caption(
+            f"Release: {operations.get('release_id') or '—'} · "
+            f"status wygenerowany: {_local_time(operations.get('generated_at'))}"
+        )
 
 
 with cost_tab:

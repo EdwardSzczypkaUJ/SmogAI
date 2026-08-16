@@ -7,6 +7,8 @@ param(
     [double]$FreshnessThresholdHours = 8.0,
     [switch]$AllowStaleData,
     [switch]$SkipSeal,
+    [int]$RetainServingReleases = 0,
+    [string]$RetentionApproval = '',
     [string]$SealOutputRoot = 'C:\Users\edzio\Downloads\SmogAI-Seals'
 )
 Set-StrictMode -Version Latest
@@ -82,9 +84,27 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Serving publication failed: $LASTEXITCODE" }
 
     Write-Host 'E4/4 Remote pointer and storage verification' -ForegroundColor Cyan
-    & $Python -m smog_ai storage-health --config $Config --env-file $EnvFile |
+    & $Python -m smog_ai storage-health --digitalocean-destination `
+        --config $Config --env-file $EnvFile |
         Tee-Object -FilePath (Join-Path $ReportRoot '04-storage-health.json')
     if ($LASTEXITCODE -ne 0) { throw "Remote storage verification failed: $LASTEXITCODE" }
+    $RemoteHealth = Get-Content -LiteralPath (Join-Path $ReportRoot '04-storage-health.json') -Raw | ConvertFrom-Json
+    $Published = Get-Content -LiteralPath (Join-Path $ReportRoot '03-publication.json') -Raw | ConvertFrom-Json
+    if ($RemoteHealth.backend -notin @('s3','spaces')) {
+        throw "Remote storage verification used unexpected backend: $($RemoteHealth.backend)"
+    }
+    if ($RemoteHealth.latest_spatial.release_id -ne $Published.details.release_id) {
+        throw "Remote pointer does not match the published release."
+    }
+    if ($RetainServingReleases -gt 0) {
+        & $Python -m smog_ai prune-serving-releases `
+            --keep $RetainServingReleases `
+            --confirmation $RetentionApproval `
+            --digitalocean-destination `
+            --config $Config --env-file $EnvFile |
+            Tee-Object -FilePath (Join-Path $ReportRoot '05-serving-retention.json')
+        if ($LASTEXITCODE -ne 0) { throw "Serving retention failed: $LASTEXITCODE" }
+    }
     Write-Host "DigitalOcean publication completed. Reports: $ReportRoot" -ForegroundColor Green
 }
 finally {

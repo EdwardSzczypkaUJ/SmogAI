@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from smog_ai.artifacts.repository import ArtifactRepository, sha256_bytes
-from smog_ai.publishing.serving_release import promote_serving_release
+from smog_ai.publishing.serving_release import (
+    RETENTION_CONFIRMATION,
+    plan_serving_release_retention,
+    promote_serving_release,
+    prune_serving_releases,
+)
 from smog_ai.storage.local import MemoryObjectStore
 
 
@@ -65,3 +70,57 @@ def test_rejects_pointer_with_invalid_manifest_checksum() -> None:
         assert "checksum" in str(exc)
     else:
         raise AssertionError("invalid checksum was accepted")
+
+
+def test_retention_keeps_three_newest_and_never_deletes_pointer_or_static() -> None:
+    repository = ArtifactRepository(MemoryObjectStore())
+    releases = [
+        "20260810T000000Z-a",
+        "20260811T000000Z-b",
+        "20260812T000000Z-c",
+        "20260813T000000Z-d",
+    ]
+    for release in releases:
+        repository.put_json(
+            f"serving/releases/release={release}/manifest.json",
+            {"release_id": release},
+        )
+        repository.store.put_bytes(
+            f"serving/releases/release={release}/surfaces/PM10/h001.json.gz",
+            release.encode(),
+        )
+    repository.put_json(
+        repository.layout.latest_spatial_pointer,
+        {"release_id": releases[-1]},
+    )
+    repository.store.put_bytes("serving/static/poland-boundary.geojson.gz", b"static")
+
+    plan = plan_serving_release_retention(repository, keep=3)
+    assert plan["deleted_release_ids"] == [releases[0]]
+    assert all(key.startswith("serving/releases/release=") for key in plan["keys"])
+
+    result = prune_serving_releases(
+        repository,
+        keep=3,
+        confirmation=RETENTION_CONFIRMATION,
+    )
+    assert result.details["objects_deleted"] == 2
+    assert repository.store.exists(repository.layout.latest_spatial_pointer)
+    assert repository.store.exists("serving/static/poland-boundary.geojson.gz")
+    assert not repository.store.exists(
+        f"serving/releases/release={releases[0]}/manifest.json"
+    )
+
+
+def test_retention_without_confirmation_is_read_only() -> None:
+    repository = ArtifactRepository(MemoryObjectStore())
+    for release in ("r1", "r2"):
+        repository.put_json(
+            f"serving/releases/release={release}/manifest.json",
+            {"release_id": release},
+        )
+    repository.put_json(repository.layout.latest_spatial_pointer, {"release_id": "r2"})
+
+    result = prune_serving_releases(repository, keep=1, confirmation="")
+    assert result.details["applied"] is False
+    assert repository.store.exists("serving/releases/release=r1/manifest.json")
