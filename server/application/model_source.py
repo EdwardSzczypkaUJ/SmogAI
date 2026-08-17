@@ -63,6 +63,17 @@ class ObjectStoreModelSource:
                     "training_data_end": row.get("training_data_end"),
                     "training_profile": row.get("training_profile"),
                     "candidate_scores": dict(row.get("candidate_scores") or {}),
+                    "model_age_hours_at_publication": row.get(
+                        "model_age_hours_at_publication"
+                    ),
+                    "last_evaluated_at": row.get("last_evaluated_at"),
+                    "evaluation_age_hours_at_publication": row.get(
+                        "evaluation_age_hours_at_publication"
+                    ),
+                    "freshness_threshold_hours": row.get(
+                        "freshness_threshold_hours"
+                    ),
+                    "freshness_status": row.get("freshness_status") or "unknown",
                     "forecast_mode": "horizon-conditioned-hourly",
                     "source": "serving_v2_manifest",
                     "card": {

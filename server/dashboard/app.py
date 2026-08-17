@@ -696,6 +696,41 @@ def _local_time(value: str | datetime | None, fmt: str = "%d.%m.%Y %H:%M") -> st
     return parsed.astimezone(ZoneInfo(DISPLAY_TIMEZONE)).strftime(fmt)
 
 
+def _live_age_hours(value: str | datetime | None) -> float | None:
+    if not value:
+        return None
+    try:
+        parsed = value if isinstance(value, datetime) else _parse_time(str(value))
+    except ValueError:
+        return None
+    if parsed is None:
+        return None
+    return max(
+        0.0,
+        (datetime.now(UTC) - parsed.astimezone(UTC)).total_seconds() / 3600.0,
+    )
+
+
+def _model_freshness_label(row: dict[str, Any]) -> tuple[str, float | None]:
+    age = _live_age_hours(row.get("last_evaluated_at"))
+    threshold = float(row.get("freshness_threshold_hours") or 12.0)
+    status = (
+        "fresh"
+        if age is not None and age <= threshold
+        else "warning"
+        if age is not None and age <= threshold * 2
+        else "stale"
+        if age is not None
+        else "unknown"
+    )
+    label = {
+        "fresh": "🟢 świeży",
+        "warning": "🟠 ostrzeżenie",
+        "stale": "🔴 stary",
+    }.get(status, "⚪ brak oceny")
+    return label, age
+
+
 def _parameter_meta(parameter: str) -> dict[str, Any]:
     return PARAMETER_META.get(
         parameter,
@@ -3407,6 +3442,38 @@ def _candidate_frame(payload: dict[str, Any]) -> pd.DataFrame:
     return frame
 
 
+def _model_history_frame(payload: dict[str, Any]) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for model in list(payload.get("models") or []):
+        metrics = dict(model.get("metrics") or {})
+        selection = dict(model.get("selection") or {})
+        outcome = str(selection.get("outcome") or "historical")
+        rows.append(
+            {
+                "Czas": model.get("created_at"),
+                "Target": model.get("target"),
+                "Model": model.get("provider"),
+                "Wersja": model.get("version"),
+                "MAE": _model_quality_number(metrics.get("mae")),
+                "RMSE": _model_quality_number(metrics.get("rmse")),
+                "Poprawa vs poprzedni": _model_quality_number(
+                    selection.get("improvement_vs_previous_active")
+                ),
+                "Poprawa vs persistence": _model_quality_number(
+                    metrics.get("improvement_vs_persistence")
+                ),
+                "Wynik treningu": outcome,
+                "Aktywny teraz": bool(model.get("active")),
+                "Status jakości": metrics.get("quality_status"),
+            }
+        )
+    frame = pd.DataFrame(rows)
+    if not frame.empty:
+        frame["Czas"] = pd.to_datetime(frame["Czas"], utc=True, errors="coerce")
+        frame = frame.sort_values("Czas")
+    return frame
+
+
 def render_ml_quality_overview() -> None:
     try:
         active_payload = load_models()
@@ -3432,6 +3499,7 @@ def render_ml_quality_overview() -> None:
         )
     active = list(active_payload.get("models") or [])
     candidates = _candidate_frame(comparison)
+    model_history = _model_history_frame(comparison)
     comparison_models = {
         str(row.get("target")): dict(row)
         for row in list(comparison.get("models") or [])
@@ -3443,11 +3511,15 @@ def render_ml_quality_overview() -> None:
     # ``parameter`` powodował błędny licznik równy zero.
     predicted_outputs = set(_manifest_parameter_options(manifest))
     selected_count = int(candidates.get("Wybrany", pd.Series(dtype=bool)).sum())
-    kpi = st.columns(4)
+    no_change_count = int(
+        (model_history.get("Wynik treningu", pd.Series(dtype=str)) == "no_change").sum()
+    )
+    kpi = st.columns(5)
     kpi[0].metric("Aktywne artefakty modeli", len(active))
     kpi[1].metric("Kandydaci MLflow", len(candidates))
     kpi[2].metric("Publikowane parametry", len(predicted_outputs))
     kpi[3].metric("Zwycięzcy w historii", selected_count)
+    kpi[4].metric("Treningi bez zmiany", no_change_count)
 
     quality_rows: list[dict[str, Any]] = []
     active_by_target = {str(row.get("target")): row for row in active}
@@ -3948,6 +4020,111 @@ def render_ml_quality_overview() -> None:
             st.warning(f"Nie udało się odczytać analityki jakości odpowiedzi: {exc}")
 
     with history_tab:
+        if not model_history.empty:
+            st.markdown("#### Kiedy nowy model był lepszy — a kiedy trening nic nie zmienił")
+            history_targets = sorted(
+                str(value) for value in model_history["Target"].dropna().unique()
+            )
+            history_target = st.selectbox(
+                "Historia parametru",
+                history_targets,
+                key="model_history_target",
+            )
+            target_history = model_history[
+                model_history["Target"].astype(str) == history_target
+            ].copy()
+            timeline = go.Figure()
+            outcome_colors = {
+                "activated": "#43e0c0",
+                "no_change": "#ffbf69",
+                "historical": "#4f7cff",
+            }
+            for outcome, group in target_history.groupby("Wynik treningu"):
+                timeline.add_scatter(
+                    x=group["Czas"],
+                    y=group["MAE"],
+                    mode="lines+markers",
+                    name={
+                        "activated": "Nowy model aktywowany",
+                        "no_change": "Brak poprawy — bez zmiany",
+                        "historical": "Model historyczny",
+                    }.get(str(outcome), str(outcome)),
+                    marker=dict(
+                        size=12,
+                        color=outcome_colors.get(str(outcome), "#8f9bb3"),
+                    ),
+                    customdata=group[["Model", "Wersja", "Poprawa vs poprzedni"]],
+                    hovertemplate=(
+                        "%{x}<br>MAE: %{y:.3f}<br>Model: %{customdata[0]}"
+                        "<br>Wersja: %{customdata[1]}<br>Zmiana vs poprzedni: "
+                        "%{customdata[2]:.1%}<extra></extra>"
+                    ),
+                )
+            timeline.update_layout(
+                title=f"Historia jakości i decyzji aktywacyjnych — {history_target}",
+                xaxis_title="Czas treningu",
+                yaxis_title="MAE (mniej = lepiej)",
+                legend=dict(orientation="h"),
+                height=440,
+            )
+            st.plotly_chart(
+                timeline,
+                width="stretch",
+                config=PLOTLY_CHART_CONFIG,
+            )
+
+            improvement_rows = target_history.dropna(
+                subset=["Poprawa vs poprzedni"]
+            )
+            if not improvement_rows.empty:
+                improvement_figure = go.Figure(
+                    go.Bar(
+                        x=improvement_rows["Czas"],
+                        y=improvement_rows["Poprawa vs poprzedni"],
+                        marker_color=[
+                            "#43e0c0" if value > 0 else "#ff6b6b"
+                            for value in improvement_rows["Poprawa vs poprzedni"]
+                        ],
+                        text=[
+                            f"{value:+.1%}"
+                            for value in improvement_rows["Poprawa vs poprzedni"]
+                        ],
+                        textposition="outside",
+                    )
+                )
+                improvement_figure.add_hline(y=0, line_color="#8f9bb3")
+                improvement_figure.update_layout(
+                    title="Zmiana względem poprzedniego aktywnego modelu",
+                    yaxis=dict(title="Poprawa", tickformat="+.0%"),
+                    height=380,
+                )
+                st.plotly_chart(
+                    improvement_figure,
+                    width="stretch",
+                    config=PLOTLY_CHART_CONFIG,
+                )
+
+            st.dataframe(
+                target_history[
+                    [
+                        "Czas",
+                        "Model",
+                        "Wersja",
+                        "MAE",
+                        "RMSE",
+                        "Poprawa vs poprzedni",
+                        "Poprawa vs persistence",
+                        "Wynik treningu",
+                        "Status jakości",
+                    ]
+                ].sort_values("Czas", ascending=False),
+                hide_index=True,
+                width="stretch",
+            )
+        else:
+            st.info("Historia wersji modeli pojawi się po publikacji statystyk.")
+
+        st.markdown("#### Historia kandydatów")
         history = candidates.copy()
         if not history.empty:
             if "Start" in history:
@@ -4079,22 +4256,131 @@ with status_tab:
         ]
         st.dataframe(pd.DataFrame(training_rows), hide_index=True, width="stretch")
 
+        collection_history = dict(operations.get("collection_history") or {})
+        freshness_checks = pd.DataFrame(
+            list(collection_history.get("freshness_checks") or [])
+        )
+        st.markdown("#### Historia pobrań i świeżości GIOŚ / IMGW")
+        if freshness_checks.empty:
+            st.info(
+                "Historia pojawi się po kolejnych raportach świeżości. "
+                "Bieżący status danych jest widoczny powyżej."
+            )
+        else:
+            freshness_checks["generated_at"] = pd.to_datetime(
+                freshness_checks["generated_at"], utc=True, errors="coerce"
+            )
+            freshness_figure = go.Figure()
+            for source, group in freshness_checks.groupby("source"):
+                freshness_figure.add_scatter(
+                    x=group["generated_at"],
+                    y=group["maximum_age_hours"],
+                    mode="lines+markers",
+                    name=str(source),
+                    customdata=group[
+                        ["status", "last_collected_at", "valid_rows"]
+                    ],
+                    hovertemplate=(
+                        "%{x}<br>Wiek danych: %{y:.2f} h<br>Status: "
+                        "%{customdata[0]}<br>Ostatnie pobranie: %{customdata[1]}"
+                        "<br>Poprawne rekordy w bazie: %{customdata[2]}<extra></extra>"
+                    ),
+                )
+            threshold_values = pd.to_numeric(
+                freshness_checks["threshold_hours"], errors="coerce"
+            ).dropna()
+            if not threshold_values.empty:
+                freshness_figure.add_hline(
+                    y=float(threshold_values.iloc[-1]),
+                    line_dash="dash",
+                    line_color="#ffbf69",
+                    annotation_text="limit świeżości",
+                )
+            freshness_figure.update_layout(
+                title="Wiek najnowszych danych w kolejnych aktualizacjach",
+                xaxis_title="Kontrola / aktualizacja",
+                yaxis_title="Wiek danych [h]",
+                legend=dict(orientation="h"),
+                height=420,
+            )
+            st.plotly_chart(
+                freshness_figure,
+                width="stretch",
+                config=PLOTLY_CHART_CONFIG,
+            )
+            st.dataframe(
+                freshness_checks[
+                    [
+                        "generated_at",
+                        "source",
+                        "status",
+                        "maximum_age_hours",
+                        "last_collected_at",
+                        "measurement_end",
+                        "parameter_count",
+                    ]
+                ].sort_values("generated_at", ascending=False),
+                hide_index=True,
+                width="stretch",
+            )
+
+        collection_runs = pd.DataFrame(list(collection_history.get("runs") or []))
+        if not collection_runs.empty:
+            run_figure = go.Figure()
+            run_figure.add_bar(
+                x=collection_runs["started_at"],
+                y=collection_runs["inserted"],
+                name="Nowe rekordy",
+                marker_color="#43e0c0",
+            )
+            run_figure.add_bar(
+                x=collection_runs["started_at"],
+                y=collection_runs["skipped"],
+                name="Już posiadane / pominięte",
+                marker_color="#4f7cff",
+                opacity=0.55,
+            )
+            run_figure.update_layout(
+                title="Wyniki zarejestrowanych przebiegów pobierania",
+                barmode="stack",
+                yaxis_title="Liczba rekordów",
+                legend=dict(orientation="h"),
+            )
+            st.plotly_chart(
+                run_figure,
+                width="stretch",
+                config=PLOTLY_CHART_CONFIG,
+            )
+
         models = list(operations.get("models") or [])
         st.markdown("#### Aktywne modele użyte przez release")
         if models:
+            model_status_rows = []
+            for row in models:
+                freshness_label, evaluation_age = _model_freshness_label(row)
+                model_status_rows.append(
+                    {
+                        "Parametr": row.get("parameter"),
+                        "Algorytm": row.get("algorithm"),
+                        "Wersja": row.get("version"),
+                        "Aktywowany": _local_time(row.get("activated_at")),
+                        "Wiek modelu przy release [h]": row.get(
+                            "model_age_hours_at_publication"
+                        ),
+                        "Ostatnio oceniony": _local_time(
+                            row.get("last_evaluated_at")
+                        ),
+                        "Bieżący wiek oceny [h]": (
+                            round(evaluation_age, 2)
+                            if evaluation_age is not None
+                            else None
+                        ),
+                        "Świeżość modelu": freshness_label,
+                        "Status jakości": row.get("quality_status"),
+                    }
+                )
             st.dataframe(
-                pd.DataFrame(
-                    [
-                        {
-                            "Parametr": row.get("parameter"),
-                            "Algorytm": row.get("algorithm"),
-                            "Wersja": row.get("version"),
-                            "Aktywowany": _local_time(row.get("activated_at")),
-                            "Status jakości": row.get("quality_status"),
-                        }
-                        for row in models
-                    ]
-                ),
+                pd.DataFrame(model_status_rows),
                 hide_index=True,
                 width="stretch",
             )

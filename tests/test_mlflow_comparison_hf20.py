@@ -116,6 +116,16 @@ def test_public_model_comparison_removes_training_and_mlflow_identifiers() -> No
                             "persistence": 2.5,
                             "invalid": "not-a-number",
                         },
+                        "activated": False,
+                        "activation_policy": "quality_gated",
+                        "active_model_comparison": {
+                            "provider": "persistence",
+                            "version": "previous-safe-version",
+                            "active_model_mae": 2.0,
+                            "candidate_mae": 1.5,
+                            "candidate_improvement_fraction": 0.25,
+                            "artifact_path": r"C:\private\previous.joblib",
+                        },
                         "dataset_id": "private-dataset",
                         "dataset_sha256": "a" * 64,
                     },
@@ -146,6 +156,15 @@ def test_public_model_comparison_removes_training_and_mlflow_identifiers() -> No
         "candidate_scores": {"ridge": 1.5, "persistence": 2.5},
     }
     assert payload["candidate_runs"][0]["metrics"] == {"mae": 1.6}
+    assert payload["models"][0]["selection"] == {
+        "outcome": "no_change",
+        "activation_policy": "quality_gated",
+        "improvement_vs_previous_active": 0.25,
+        "previous_active_provider": "persistence",
+        "previous_active_version": "previous-safe-version",
+        "previous_active_mae": 2.0,
+        "candidate_mae": 1.5,
+    }
     assert payload["privacy"]["model_binaries_included"] is False
     assert "private" not in encoded
     assert "artifact_path" not in encoded

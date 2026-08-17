@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -7,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from smog_ai.config import AppConfig
-from smog_ai.database.models import ModelVersion, ProcessLock, TrainingRun
+from smog_ai.database.models import CollectionRun, ModelVersion, ProcessLock, TrainingRun
 from smog_ai.database.repository import as_utc
 from smog_ai.time_utils import utc_now
 
@@ -43,6 +44,107 @@ def _freshness(age_hours: float, threshold_hours: float) -> str:
     if age_hours <= threshold_hours * 2:
         return "warning"
     return "stale"
+
+
+def _age_hours(newer: datetime, older: datetime | None) -> float | None:
+    if older is None:
+        return None
+    return max(0.0, (newer - as_utc(older)).total_seconds() / 3600.0)
+
+
+def _safe_number(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number
+
+
+def _freshness_check_history(config: AppConfig, *, limit: int = 30) -> list[dict[str, Any]]:
+    """Read safe source-level aggregates from local freshness reports."""
+
+    root = config.paths.logs_dir.parent / "reports" / "freshness"
+    if not root.exists():
+        return []
+    paths = sorted(
+        (
+            path
+            for path in root.glob("data-freshness-*.json")
+            if path.name != "data-freshness-latest.json"
+        ),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )[:limit]
+    history: list[dict[str, Any]] = []
+    status_rank = {"fresh": 0, "warning": 1, "stale": 2, "missing": 3}
+    for path in paths:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError, TypeError):
+            continue
+        generated_at = payload.get("generated_at")
+        for source in ("GIOS", "IMGW"):
+            rows = [
+                dict(row)
+                for row in list(payload.get("parameters") or [])
+                if str(dict(row).get("source") or "").upper() == source
+            ]
+            if not rows:
+                continue
+            statuses = [str(row.get("status") or "missing") for row in rows]
+            status = max(statuses, key=lambda value: status_rank.get(value, 4))
+            ages = [
+                number
+                for number in (_safe_number(row.get("age_hours")) for row in rows)
+                if number is not None
+            ]
+            history.append(
+                {
+                    "generated_at": generated_at,
+                    "source": source,
+                    "status": status,
+                    "maximum_age_hours": max(ages) if ages else None,
+                    "threshold_hours": _safe_number(rows[0].get("threshold_hours")),
+                    "parameter_count": len(rows),
+                    "valid_rows": sum(int(row.get("valid_rows") or 0) for row in rows),
+                    "last_collected_at": max(
+                        (str(row.get("last_collected_at")) for row in rows if row.get("last_collected_at")),
+                        default=None,
+                    ),
+                    "measurement_end": max(
+                        (str(row.get("measurement_end")) for row in rows if row.get("measurement_end")),
+                        default=None,
+                    ),
+                }
+            )
+    return sorted(history, key=lambda row: str(row.get("generated_at") or ""))
+
+
+def _training_outcome(
+    run: TrainingRun,
+    summary: dict[str, Any],
+    metrics: dict[str, Any],
+) -> tuple[str, str]:
+    status = str(run.status or "unknown")
+    if status == "running":
+        return "running", "training_in_progress"
+    if status.startswith("failed"):
+        return "failed", "training_failed"
+    if bool(summary.get("activated") or metrics.get("activated")):
+        return "activated", "better_model_activated"
+    activation_policy = str(
+        summary.get("activation_policy") or metrics.get("activation_policy") or ""
+    )
+    quality_status = str(summary.get("quality_status") or metrics.get("quality_status") or "")
+    comparison = dict(metrics.get("active_model_comparison") or {})
+    improvement = _safe_number(comparison.get("candidate_improvement_fraction"))
+    if activation_policy == "candidate_only":
+        return "no_change", "candidate_only_review"
+    if quality_status in {"experimental", "rejected"}:
+        return "no_change", f"quality_{quality_status}"
+    if improvement is not None and improvement <= 0:
+        return "no_change", "candidate_not_better_than_active"
+    return "no_change", "no_activation_after_evaluation"
 
 
 def build_public_operations_status(
@@ -82,6 +184,80 @@ def build_public_operations_status(
     regular_completed = _last_success_by_profile(recent_runs, "quick")
     heavy_completed = _last_success_by_profile(recent_runs, "full")
 
+    model_ids = [run.best_model_version_id for run in recent_runs if run.best_model_version_id]
+    trained_models = {
+        model.id: model
+        for model in session.scalars(
+            select(ModelVersion).where(ModelVersion.id.in_(model_ids))
+        ).all()
+    } if model_ids else {}
+    training_history: list[dict[str, Any]] = []
+    latest_evaluation_by_target: dict[str, datetime] = {}
+    for run in recent_runs[:60]:
+        summary = dict(run.summary_json or {})
+        model = trained_models.get(str(run.best_model_version_id or ""))
+        metrics = dict(model.metrics_json or {}) if model is not None else {}
+        target = str(run.parameter or summary.get("target") or "")
+        finished = as_utc(run.finished_at) if run.finished_at is not None else None
+        if target and finished is not None and str(run.status).startswith("success"):
+            previous = latest_evaluation_by_target.get(target)
+            if previous is None or finished > previous:
+                latest_evaluation_by_target[target] = finished
+        outcome, reason = _training_outcome(run, summary, metrics)
+        active_comparison = dict(metrics.get("active_model_comparison") or {})
+        training_history.append(
+            {
+                "started_at": _iso(run.started_at),
+                "finished_at": _iso(run.finished_at),
+                "status": str(run.status),
+                "target": target or None,
+                "profile": _profile(run),
+                "provider": summary.get("selected_provider")
+                or (model.algorithm if model is not None else None),
+                "model_version": summary.get("model_version")
+                or (model.semantic_version if model is not None else None),
+                "mae": _safe_number(summary.get("score_mae") or metrics.get("mae")),
+                "improvement_vs_persistence": _safe_number(
+                    summary.get("improvement_vs_persistence")
+                    if summary.get("improvement_vs_persistence") is not None
+                    else metrics.get("improvement_vs_persistence")
+                ),
+                "improvement_vs_previous_active": _safe_number(
+                    active_comparison.get("candidate_improvement_fraction")
+                ),
+                "quality_status": summary.get("quality_status")
+                or metrics.get("quality_status"),
+                "outcome": outcome,
+                "outcome_reason": reason,
+            }
+        )
+
+    collection_runs = list(
+        session.scalars(
+            select(CollectionRun).order_by(CollectionRun.started_at.desc()).limit(60)
+        ).all()
+    )
+    public_collection_runs = []
+    for run in collection_runs:
+        run_type = str(run.run_type or "")
+        if not any(token in run_type.casefold() for token in ("collect", "pipeline", "refresh")):
+            continue
+        public_collection_runs.append(
+            {
+                "run_type": run_type,
+                "started_at": _iso(run.started_at),
+                "finished_at": _iso(run.finished_at),
+                "status": str(run.status),
+                "downloaded": int(run.records_downloaded or 0),
+                "inserted": int(run.records_inserted or 0),
+                "skipped": int(run.records_skipped or 0),
+                "warnings": int(run.warnings_count or 0),
+                "errors": int(run.errors_count or 0),
+            }
+        )
+        if len(public_collection_runs) >= 30:
+            break
+
     active_models = list(
         session.scalars(
             select(ModelVersion)
@@ -92,6 +268,9 @@ def build_public_operations_status(
     model_cards = []
     for model in active_models:
         metrics = model.metrics_json or {}
+        model_age = _age_hours(generated, model.activated_at or model.created_at)
+        last_evaluated = latest_evaluation_by_target.get(str(model.parameter))
+        evaluation_age = _age_hours(generated, last_evaluated)
         candidate_scores = {}
         for provider, score in dict(metrics.get("candidate_scores") or {}).items():
             try:
@@ -122,6 +301,19 @@ def build_public_operations_status(
                     if metrics.get(key) is not None
                 },
                 "candidate_scores": candidate_scores,
+                "model_age_hours_at_publication": (
+                    round(model_age, 3) if model_age is not None else None
+                ),
+                "last_evaluated_at": _iso(last_evaluated),
+                "evaluation_age_hours_at_publication": (
+                    round(evaluation_age, 3) if evaluation_age is not None else None
+                ),
+                "freshness_threshold_hours": float(operations.regular_training_hours),
+                "freshness_status": (
+                    _freshness(evaluation_age, float(operations.regular_training_hours))
+                    if evaluation_age is not None
+                    else "unknown"
+                ),
             }
         )
 
@@ -161,6 +353,11 @@ def build_public_operations_status(
                 else None
             ),
             "concurrency_policy": "single-shared-lease-defer",
+            "history": training_history,
+        },
+        "collection_history": {
+            "runs": public_collection_runs,
+            "freshness_checks": _freshness_check_history(config),
         },
         "serving": {
             "surface_count": int(surface_count),

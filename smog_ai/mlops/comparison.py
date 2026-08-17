@@ -41,6 +41,10 @@ def _metric_subset(metrics: dict[str, Any]) -> dict[str, Any]:
         "training_profile",
         "budget_truncated",
         "quality_status",
+        "candidate_scores",
+        "active_model_comparison",
+        "activated",
+        "activation_policy",
         "dataset_id",
         "dataset_sha256",
     )
@@ -82,6 +86,13 @@ def _public_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _safe_public_number(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def build_public_model_comparison_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Strip local training and MLflow identifiers from comparison metadata.
 
@@ -92,6 +103,15 @@ def build_public_model_comparison_payload(payload: dict[str, Any]) -> dict[str, 
     models = []
     for raw in list(payload.get("models") or []):
         row = dict(raw or {})
+        metrics = dict(row.get("metrics") or {})
+        active_comparison = dict(metrics.get("active_model_comparison") or {})
+        activated = metrics.get("activated")
+        if activated is True:
+            selection_outcome = "activated"
+        elif activated is False:
+            selection_outcome = "no_change"
+        else:
+            selection_outcome = "historical"
         models.append(
             {
                 "target": row.get("target"),
@@ -102,7 +122,22 @@ def build_public_model_comparison_payload(payload: dict[str, Any]) -> dict[str, 
                 "activated_at": row.get("activated_at"),
                 "training_data_start": row.get("training_data_start"),
                 "training_data_end": row.get("training_data_end"),
-                "metrics": _public_metrics(dict(row.get("metrics") or {})),
+                "metrics": _public_metrics(metrics),
+                "selection": {
+                    "outcome": selection_outcome,
+                    "activation_policy": metrics.get("activation_policy"),
+                    "improvement_vs_previous_active": _safe_public_number(
+                        active_comparison.get("candidate_improvement_fraction")
+                    ),
+                    "previous_active_provider": active_comparison.get("provider"),
+                    "previous_active_version": active_comparison.get("version"),
+                    "previous_active_mae": _safe_public_number(
+                        active_comparison.get("active_model_mae")
+                    ),
+                    "candidate_mae": _safe_public_number(
+                        active_comparison.get("candidate_mae")
+                    ),
+                },
             }
         )
 
