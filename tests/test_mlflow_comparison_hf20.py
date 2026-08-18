@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from smog_ai.artifacts.repository import ArtifactRepository
 from smog_ai.database.engine import session_scope
 from smog_ai.database.models import ModelVersion
 from smog_ai.mlops.comparison import (
@@ -9,6 +10,7 @@ from smog_ai.mlops.comparison import (
     export_model_comparison,
 )
 from smog_ai.mlops.mlflow_bridge import create_mlflow_bridge
+from smog_ai.storage.local import MemoryObjectStore
 
 
 def test_mlflow_is_noop_by_default(app_config) -> None:  # type: ignore[no-untyped-def]
@@ -60,6 +62,45 @@ def test_model_comparison_is_exported_locally_without_object_store(
     model = result["payload"]["models"][0]
     assert model["target"] == "PM10"
     assert model["metrics"]["mae"] == 2.0
+
+
+def test_published_model_comparison_is_read_back_and_verified(
+    engine, app_config, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    repository = ArtifactRepository(MemoryObjectStore())
+    monkeypatch.setattr(
+        "smog_ai.mlops.comparison.create_artifact_repository",
+        lambda config: repository,
+    )
+    app_config.object_storage.enabled = True
+    with session_scope(engine) as session:
+        session.add(
+            ModelVersion(
+                model_name="hourly-PM10-ridge",
+                algorithm="ridge",
+                parameter="PM10",
+                forecast_horizon=0,
+                semantic_version="safe-version",
+                artifact_path="private-model.joblib",
+                metrics_json={"mae": 1.25},
+                active=True,
+            )
+        )
+        session.flush()
+        result = export_model_comparison(session, app_config, publish=True)
+
+    assert result["published"]["remote_verified"] is True
+    assert result["published"]["pointer_published_last"] is True
+    assert result["published"]["model_count"] == 1
+    assert result["published"]["candidate_run_count"] == 0
+    immutable_key = result["published"]["immutable_object_key"]
+    assert immutable_key.startswith("metrics/hourly-models/comparison/objects/")
+    assert immutable_key.endswith(".json")
+    immutable = repository.get_json(immutable_key)
+    remote = repository.get_json(repository.layout.model_comparison_pointer)
+    assert immutable == remote
+    assert remote["models"][0]["version"] == "safe-version"
+    assert "artifact_path" not in str(remote)
 
 
 def test_model_comparison_includes_mlflow_candidate_runs(

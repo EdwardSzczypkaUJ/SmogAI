@@ -87,9 +87,19 @@ try {
 
     Write-Host 'E4/5 Sanitised model-quality statistics' -ForegroundColor Cyan
     & $Python -m smog_ai export-model-comparison --publish `
+        --digitalocean-destination `
         --config $Config --env-file $EnvFile |
         Tee-Object -FilePath (Join-Path $ReportRoot '04-model-comparison.json')
     if ($LASTEXITCODE -ne 0) { throw "Model comparison publication failed: $LASTEXITCODE" }
+    $ComparisonPublication = Get-Content `
+        -LiteralPath (Join-Path $ReportRoot '04-model-comparison.json') `
+        -Raw | ConvertFrom-Json
+    if (-not $ComparisonPublication.published.remote_verified) {
+        throw 'Remote model comparison verification was not confirmed.'
+    }
+    if ([int]$ComparisonPublication.published.model_count -lt 1) {
+        throw 'Published model comparison does not contain model history.'
+    }
 
     Write-Host 'E5/5 Remote pointer and storage verification' -ForegroundColor Cyan
     & $Python -m smog_ai storage-health --digitalocean-destination `

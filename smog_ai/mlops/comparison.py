@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from datetime import UTC, datetime
@@ -10,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from smog_ai.artifacts.datasets import create_artifact_repository
+from smog_ai.artifacts.repository import canonical_json_bytes
 from smog_ai.config import AppConfig
 from smog_ai.database.models import ModelVersion
 from smog_ai.mlops.mlflow_bridge import create_mlflow_bridge
@@ -398,15 +400,40 @@ def export_model_comparison(
             )
         repository = create_artifact_repository(config)
         public_payload = build_public_model_comparison_payload(payload)
-        stored = repository.put_json(
-            repository.layout.model_comparison_pointer,
+        public_bytes = canonical_json_bytes(public_payload)
+        content_sha256 = hashlib.sha256(public_bytes).hexdigest()
+        pointer_key = repository.layout.model_comparison_pointer
+        comparison_prefix = pointer_key.rsplit("/", 1)[0]
+        immutable_key = f"{comparison_prefix}/objects/{content_sha256}.json"
+        immutable = repository.put_json(
+            immutable_key,
             public_payload,
+            immutable=True,
+            metadata={
+                "artifact": "model-comparison",
+                "sha256": content_sha256,
+            },
         )
+        verified_immutable = repository.get_json(immutable_key)
+        if canonical_json_bytes(verified_immutable) != public_bytes:
+            raise RuntimeError(
+                "Remote immutable model comparison verification failed"
+            )
+        stored = repository.put_json(pointer_key, public_payload)
+        verified_pointer = repository.get_json(pointer_key)
+        if canonical_json_bytes(verified_pointer) != public_bytes:
+            raise RuntimeError("Remote model comparison pointer verification failed")
         published = {
             "object_key": stored.key,
+            "immutable_object_key": immutable.key,
+            "pointer_object_key": stored.key,
             "checksum": stored.checksum,
             "size": stored.size,
             "schema_version": public_payload["schema_version"],
+            "model_count": len(public_payload["models"]),
+            "candidate_run_count": int(public_payload["candidate_run_count"]),
+            "remote_verified": True,
+            "pointer_published_last": True,
             "privacy": public_payload["privacy"],
         }
     return {

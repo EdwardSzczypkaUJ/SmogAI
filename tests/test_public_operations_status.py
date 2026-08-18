@@ -4,7 +4,13 @@ import json
 from datetime import UTC, datetime, timedelta
 
 from smog_ai.database.engine import session_scope
-from smog_ai.database.models import CollectionRun, ModelVersion, ProcessLock, TrainingRun
+from smog_ai.database.models import (
+    CollectionRun,
+    ModelVersion,
+    ProcessLock,
+    TrainingRun,
+)
+from smog_ai.database.repository import set_application_state
 from smog_ai.operations import (
     _digitalocean_transfer_history,
     build_public_operations_status,
@@ -162,6 +168,49 @@ def test_public_operations_status_is_sanitised_and_uses_test_cadence(
     assert "private-token" not in encoded
     assert "12345" not in encoded
     assert "secret" not in encoded
+
+
+def test_public_operations_uses_source_success_times_not_old_pipeline_run(
+    engine,
+    app_config,
+) -> None:
+    now = datetime.now(UTC)
+    with session_scope(engine) as session:
+        session.add(
+            CollectionRun(
+                run_type="hourly_pipeline",
+                started_at=now - timedelta(hours=345),
+                finished_at=now - timedelta(hours=344),
+                status="success",
+            )
+        )
+        set_application_state(
+            session,
+            "last_gios_success_at",
+            (now - timedelta(hours=1)).isoformat(),
+        )
+        set_application_state(
+            session,
+            "last_imgw_success_at",
+            (now - timedelta(hours=2)).isoformat(),
+        )
+        session.flush()
+        payload = build_public_operations_status(
+            session,
+            app_config,
+            source_origin_time=now - timedelta(hours=3),
+            generated_at=now,
+            surface_count=240,
+        )
+
+    assert payload["data"]["collection_age_hours_at_publication"] == 2.0
+    assert payload["data"]["fresh_threshold_hours"] == 14.0
+    assert payload["data"]["stale_threshold_hours"] == 22.0
+    sources = {row["source"]: row for row in payload["data"]["sources"]}
+    assert sources["GIOS"]["collection_age_hours_at_publication"] == 1.0
+    assert sources["IMGW"]["collection_age_hours_at_publication"] == 2.0
+    assert sources["GIOS"]["collection_status_at_publication"] == "fresh"
+    assert sources["IMGW"]["collection_status_at_publication"] == "fresh"
 
 
 def test_digitalocean_transfer_history_reads_utf16_legacy_reports(app_config) -> None:

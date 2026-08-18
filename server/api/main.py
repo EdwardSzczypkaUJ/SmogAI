@@ -14,6 +14,7 @@ import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.orm import Session
 
 from server.api.settings import ServerSettings
 from server.application.query import (
@@ -34,12 +35,15 @@ from server.database.store import (
     SnapshotStoreProtocol,
     create_snapshot_store,
 )
+from smog_ai.config import load_config
+from smog_ai.database.engine import create_db_engine
+from smog_ai.observability.analytics import read_langfuse_quality_summary
 from smog_ai.observability.feedback import (
     LocalPromptFeedbackStore,
     PromptFeedbackRecord,
 )
-from smog_ai.observability.analytics import read_langfuse_quality_summary
 from smog_ai.observability.own_store import OwnAnalyticsStore
+from smog_ai.operations import build_public_operations_status
 
 logger = logging.getLogger("smog_ai.server")
 settings = ServerSettings.from_env()
@@ -427,14 +431,79 @@ def spatial_manifest() -> JSONResponse:
     )
 
 
+# HF21_LOCAL_LIVE_FRESHNESS_STATUS_V1
+def _manifest_datetime(value: object) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _local_live_operations(manifest: dict[str, Any]) -> dict[str, Any] | None:
+    """Overlay local status with current database timestamps.
+
+    Production continues to use the sanitised immutable manifest. The local
+    development API may safely calculate current GIOS and IMGW freshness from
+    ApplicationState without modifying the database or surface objects.
+    """
+
+    if settings.environment == "production":
+        return None
+
+    surfaces = list(manifest.get("surfaces") or [])
+    parsed_origins = [
+        _manifest_datetime(dict(item).get("origin_time"))
+        for item in surfaces
+        if isinstance(item, dict)
+    ]
+    origins = [value for value in parsed_origins if value is not None]
+    if not origins:
+        return None
+
+    engine = None
+    try:
+        config = load_config()
+        engine = create_db_engine(config)
+        with Session(engine) as session:
+            payload = build_public_operations_status(
+                session,
+                config,
+                source_origin_time=min(origins),
+                generated_at=datetime.now(UTC),
+                surface_count=len(surfaces),
+            )
+
+        source_rows = list(dict(payload.get("data") or {}).get("sources") or [])
+        valid_sources = {
+            str(dict(row).get("source") or "").upper()
+            for row in source_rows
+            if dict(row).get("last_collection_at")
+        }
+        if not {"GIOS", "IMGW"}.issubset(valid_sources):
+            return None
+        return payload
+    except Exception as exc:
+        logger.warning("Local live freshness overlay unavailable: %s", exc)
+        return None
+    finally:
+        if engine is not None:
+            engine.dispose()
+
+
 @app.get("/api/v1/system/status")
 def public_system_status() -> JSONResponse:
-    """Return only the sanitised operational contract embedded in Serving v2."""
+    """Return a sanitised operational contract for the active release."""
 
     if query_service.spatial_source is None:
         raise HTTPException(status_code=404, detail="Spatial surfaces are disabled")
     manifest = query_service.spatial_source.latest_manifest()
-    payload = dict((manifest or {}).get("operations") or {})
+    manifest_payload = dict((manifest or {}).get("operations") or {})
+    payload = _local_live_operations(dict(manifest or {})) or manifest_payload
     if not payload:
         raise HTTPException(
             status_code=404,
@@ -444,7 +513,7 @@ def public_system_status() -> JSONResponse:
     payload["surface_set_id"] = (manifest or {}).get("surface_set_id")
     return JSONResponse(
         content=payload,
-        headers={"Cache-Control": "public, max-age=60, stale-while-revalidate=300"},
+        headers={"Cache-Control": "no-store"},
     )
 
 

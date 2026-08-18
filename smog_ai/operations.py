@@ -4,15 +4,25 @@ import json
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from smog_ai.config import AppConfig
-from smog_ai.database.models import CollectionRun, ModelVersion, ProcessLock, TrainingRun
+from smog_ai.database.models import (
+    AirMeasurement,
+    ApplicationState,
+    CollectionRun,
+    ModelVersion,
+    ProcessLock,
+    TrainingRun,
+    WeatherMeasurement,
+)
 from smog_ai.database.repository import as_utc
 from smog_ai.time_utils import utc_now
 
 TRAINING_LOCK_NAME = "snapshot-hourly-training"
+PUBLIC_DATA_FRESH_HOURS = 14.0
+PUBLIC_DATA_STALE_HOURS = 22.0
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -77,6 +87,98 @@ def _age_hours(newer: datetime, older: datetime | None) -> float | None:
     if older is None:
         return None
     return max(0.0, (newer - as_utc(older)).total_seconds() / 3600.0)
+
+
+def _state_datetime(session: Session, key: str) -> datetime | None:
+    state = session.get(ApplicationState, key)
+    if state is None or state.value_json in (None, ""):
+        return None
+    try:
+        parsed = datetime.fromisoformat(
+            str(state.value_json).replace("Z", "+00:00")
+        )
+    except (TypeError, ValueError):
+        return None
+    return as_utc(parsed)
+
+
+def _source_freshness_at_publication(
+    session: Session,
+    generated: datetime,
+) -> list[dict[str, Any]]:
+    """Build source freshness from measurements and collector success state."""
+
+    air_latest = [
+        as_utc(value)
+        for value in session.scalars(
+            select(func.max(AirMeasurement.measurement_time)).group_by(
+                AirMeasurement.parameter
+            )
+        ).all()
+        if value is not None
+    ]
+    weather_latest: list[datetime] = []
+    for column in (
+        WeatherMeasurement.temperature_c,
+        WeatherMeasurement.humidity_percent,
+        WeatherMeasurement.pressure_hpa,
+        WeatherMeasurement.precipitation_mm,
+        WeatherMeasurement.wind_speed_mps,
+        WeatherMeasurement.wind_direction_deg,
+    ):
+        value = session.scalar(
+            select(func.max(WeatherMeasurement.measurement_time)).where(
+                column.is_not(None)
+            )
+        )
+        if value is not None:
+            weather_latest.append(as_utc(value))
+    source_values = (
+        ("GIOS", min(air_latest) if air_latest else None, "last_gios_success_at"),
+        (
+            "IMGW",
+            min(weather_latest) if weather_latest else None,
+            "last_imgw_success_at",
+        ),
+    )
+    rows: list[dict[str, Any]] = []
+    for source, measurement_end, state_key in source_values:
+        last_collection_at = _state_datetime(session, state_key)
+        measurement_age = _age_hours(generated, measurement_end)
+        collection_age = _age_hours(generated, last_collection_at)
+        measurement_status = _freshness(
+            measurement_age,
+            PUBLIC_DATA_FRESH_HOURS,
+            PUBLIC_DATA_STALE_HOURS,
+        )
+        collection_status = _freshness(
+            collection_age,
+            PUBLIC_DATA_FRESH_HOURS,
+            PUBLIC_DATA_STALE_HOURS,
+        )
+        rows.append(
+            {
+                "source": source,
+                "measurement_end": _iso(measurement_end),
+                "last_collection_at": _iso(last_collection_at),
+                "measurement_age_hours_at_publication": (
+                    round(measurement_age, 3)
+                    if measurement_age is not None
+                    else None
+                ),
+                "collection_age_hours_at_publication": (
+                    round(collection_age, 3)
+                    if collection_age is not None
+                    else None
+                ),
+                "measurement_status_at_publication": measurement_status,
+                "collection_status_at_publication": collection_status,
+                "status_at_publication": _worst_freshness(
+                    measurement_status, collection_status
+                ),
+            }
+        )
+    return rows
 
 
 def _safe_number(value: Any) -> float | None:
@@ -487,16 +589,33 @@ def build_public_operations_status(
             }
         )
 
+    source_freshness = _source_freshness_at_publication(session, generated)
+    successful_source_collections = [
+        _state_datetime(
+            session,
+            (
+                "last_gios_success_at"
+                if row["source"] == "GIOS"
+                else "last_imgw_success_at"
+            ),
+        )
+        for row in source_freshness
+    ]
+    successful_source_collections = [
+        value for value in successful_source_collections if value is not None
+    ]
+    if successful_source_collections:
+        latest_collection_at = min(successful_source_collections)
     collection_age_hours = _age_hours(generated, latest_collection_at)
     measurement_status = _freshness(
         age_hours,
-        float(operations.freshness_hours),
-        float(operations.freshness_stale_hours),
+        PUBLIC_DATA_FRESH_HOURS,
+        PUBLIC_DATA_STALE_HOURS,
     )
     collection_status = _freshness(
         collection_age_hours,
-        float(operations.freshness_hours),
-        float(operations.freshness_stale_hours),
+        PUBLIC_DATA_FRESH_HOURS,
+        PUBLIC_DATA_STALE_HOURS,
     )
     return {
         "schema_version": "1.1",
@@ -511,14 +630,15 @@ def build_public_operations_status(
                 round(collection_age_hours, 3)
                 if collection_age_hours is not None else None
             ),
-            "freshness_threshold_hours": float(operations.freshness_hours),
-            "fresh_threshold_hours": float(operations.freshness_hours),
-            "stale_threshold_hours": float(operations.freshness_stale_hours),
+            "freshness_threshold_hours": PUBLIC_DATA_FRESH_HOURS,
+            "fresh_threshold_hours": PUBLIC_DATA_FRESH_HOURS,
+            "stale_threshold_hours": PUBLIC_DATA_STALE_HOURS,
             "measurement_status_at_publication": measurement_status,
             "collection_status_at_publication": collection_status,
             "status_at_publication": _worst_freshness(
                 measurement_status, collection_status
             ),
+            "sources": source_freshness,
         },
         "schedule": {
             "serving_refresh_hours": operations.serving_refresh_hours,

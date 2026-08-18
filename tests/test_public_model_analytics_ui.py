@@ -49,6 +49,9 @@ def test_dashboard_degrades_cleanly_without_optional_remote_services() -> None:
     assert 'annotation_text=f"stale / blokada ({stale_threshold:g} h)"' in source
     assert "Aktualna świeżość — TERAZ" in source
     assert "Wartości są przeliczane przy każdym odświeżeniu strony" in source
+    assert "PUBLIC_DATA_FRESH_HOURS = 14.0" in source
+    assert "PUBLIC_DATA_STALE_HOURS = 22.0" in source
+    assert 'data_status.get("sources")' in source
     assert '"point_kind": "TERAZ"' in source
     assert "Zwycięzcy parametrów — kilka metryk obok siebie" in source
     assert 'barmode="group"' in source

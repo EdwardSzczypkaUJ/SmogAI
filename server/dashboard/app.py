@@ -1198,6 +1198,10 @@ def _data_freshness_status(
     return "stale"
 
 
+PUBLIC_DATA_FRESH_HOURS = 14.0
+PUBLIC_DATA_STALE_HOURS = 22.0
+
+
 def _parameter_meta(parameter: str) -> dict[str, Any]:
     return PARAMETER_META.get(
         parameter,
@@ -4992,26 +4996,59 @@ with status_tab:
 
         source_time = data_status.get("source_origin_time")
         collection_time = data_status.get("last_collection_at")
-        measurement_age = _live_age_hours(source_time)
-        collection_age = _live_age_hours(collection_time)
-        fresh_threshold = float(
-            data_status.get("fresh_threshold_hours")
-            or data_status.get("freshness_threshold_hours")
-            or 14.0
+        source_statuses = [
+            dict(row) for row in list(data_status.get("sources") or [])
+        ]
+        fresh_threshold = PUBLIC_DATA_FRESH_HOURS
+        stale_threshold = PUBLIC_DATA_STALE_HOURS
+        source_measurement_ages = [
+            age
+            for age in (
+                _live_age_hours(row.get("measurement_end"))
+                for row in source_statuses
+            )
+            if age is not None
+        ]
+        source_collection_ages = [
+            age
+            for age in (
+                _live_age_hours(row.get("last_collection_at"))
+                for row in source_statuses
+            )
+            if age is not None
+        ]
+        measurement_age = (
+            max(source_measurement_ages)
+            if source_measurement_ages
+            else _live_age_hours(source_time)
         )
-        stale_threshold = float(
-            data_status.get("stale_threshold_hours") or 22.0
-        )
-        measurement_freshness = _data_freshness_status(
-            measurement_age, fresh_threshold, stale_threshold
-        )
-        collection_freshness = _data_freshness_status(
-            collection_age, fresh_threshold, stale_threshold
+        collection_age = (
+            max(source_collection_ages)
+            if source_collection_ages
+            else _live_age_hours(collection_time)
         )
         freshness_rank = {"fresh": 0, "warning": 1, "stale": 2, "missing": 3}
-        statuses = [measurement_freshness]
-        if "last_collection_at" in data_status:
-            statuses.append(collection_freshness)
+        if source_statuses:
+            statuses = [
+                _data_freshness_status(age, fresh_threshold, stale_threshold)
+                for row in source_statuses
+                for age in (
+                    _live_age_hours(row.get("measurement_end")),
+                    _live_age_hours(row.get("last_collection_at")),
+                )
+            ]
+        else:
+            statuses = [
+                _data_freshness_status(
+                    measurement_age, fresh_threshold, stale_threshold
+                )
+            ]
+            if "last_collection_at" in data_status:
+                statuses.append(
+                    _data_freshness_status(
+                        collection_age, fresh_threshold, stale_threshold
+                    )
+                )
         live_freshness = max(
             statuses, key=lambda value: freshness_rank.get(value, 4)
         )
@@ -5170,6 +5207,36 @@ with status_tab:
             freshness_checks["fresh_threshold_hours"] = fresh_threshold
             freshness_checks["stale_threshold_hours"] = stale_threshold
 
+        if freshness_checks.empty and source_statuses:
+            freshness_checks = pd.DataFrame(
+                [
+                    {
+                        "generated_at": operations.get("generated_at"),
+                        "source": row.get("source"),
+                        "status": row.get("status_at_publication"),
+                        "maximum_measurement_age_hours": row.get(
+                            "measurement_age_hours_at_publication"
+                        ),
+                        "maximum_collection_age_hours": row.get(
+                            "collection_age_hours_at_publication"
+                        ),
+                        "measurement_status": row.get(
+                            "measurement_status_at_publication"
+                        ),
+                        "collection_status": row.get(
+                            "collection_status_at_publication"
+                        ),
+                        "fresh_threshold_hours": fresh_threshold,
+                        "stale_threshold_hours": stale_threshold,
+                        "valid_rows": None,
+                        "last_collected_at": row.get("last_collection_at"),
+                        "measurement_end": row.get("measurement_end"),
+                        "parameter_count": None,
+                    }
+                    for row in source_statuses
+                ]
+            )
+
         st.markdown("#### Historia pobrań i świeżości GIOŚ / IMGW")
         st.caption("Wiek najnowszych danych w kolejnych aktualizacjach")
         if freshness_checks.empty:
@@ -5183,40 +5250,30 @@ with status_tab:
             )
             live_rows: list[dict[str, Any]] = []
             live_timestamp = pd.Timestamp.now(tz="UTC")
-            for source, source_history in freshness_checks.groupby("source"):
-                latest = source_history.sort_values(
-                    "generated_at", na_position="first"
-                ).iloc[-1]
-
-                def live_history_age(
-                    latest_row: pd.Series,
-                    timestamp_column: str,
-                    age_column: str,
-                ) -> float | None:
-                    timestamp_age = _live_age_hours(
-                        latest_row.get(timestamp_column)
+            current_sources = source_statuses
+            if not current_sources:
+                current_sources = []
+                for source, source_history in freshness_checks.groupby("source"):
+                    latest = source_history.sort_values(
+                        "generated_at", na_position="first"
+                    ).iloc[-1]
+                    current_sources.append(
+                        {
+                            "source": source,
+                            "measurement_end": latest.get("measurement_end"),
+                            "last_collection_at": latest.get("last_collected_at"),
+                            "valid_rows": latest.get("valid_rows"),
+                            "parameter_count": latest.get("parameter_count"),
+                        }
                     )
-                    if timestamp_age is not None:
-                        return timestamp_age
-                    recorded_age = pd.to_numeric(
-                        pd.Series([latest_row.get(age_column)]), errors="coerce"
-                    ).iloc[0]
-                    recorded_at = latest_row.get("generated_at")
-                    if pd.isna(recorded_age) or pd.isna(recorded_at):
-                        return None
-                    elapsed_since_check = max(
-                        0.0,
-                        (live_timestamp - recorded_at).total_seconds() / 3600.0,
-                    )
-                    return float(recorded_age) + elapsed_since_check
 
-                live_measurement_age = live_history_age(
-                    latest,
-                    "measurement_end", "maximum_measurement_age_hours"
+            for current_source in current_sources:
+                source = str(current_source.get("source") or "unknown")
+                live_measurement_age = _live_age_hours(
+                    current_source.get("measurement_end")
                 )
-                live_collection_age = live_history_age(
-                    latest,
-                    "last_collected_at", "maximum_collection_age_hours"
+                live_collection_age = _live_age_hours(
+                    current_source.get("last_collection_at")
                 )
                 live_measurement_status = _data_freshness_status(
                     live_measurement_age, fresh_threshold, stale_threshold
@@ -5237,10 +5294,10 @@ with status_tab:
                     "collection_status": live_collection_status,
                     "fresh_threshold_hours": fresh_threshold,
                     "stale_threshold_hours": stale_threshold,
-                    "valid_rows": latest.get("valid_rows"),
-                    "last_collected_at": latest.get("last_collected_at"),
-                    "measurement_end": latest.get("measurement_end"),
-                    "parameter_count": latest.get("parameter_count"),
+                    "valid_rows": current_source.get("valid_rows"),
+                    "last_collected_at": current_source.get("last_collection_at"),
+                    "measurement_end": current_source.get("measurement_end"),
+                    "parameter_count": current_source.get("parameter_count"),
                     "point_kind": "TERAZ",
                 })
 

@@ -2934,10 +2934,17 @@ def command_export_model_comparison(
             "Domyslnie zapis jest wylacznie lokalny."
         ),
     ),
+    digitalocean_destination: bool = typer.Option(
+        False,
+        "--digitalocean-destination/--configured-destination",
+        help="Publish and verify in Spaces selected from SPACES_* settings.",
+    ),
     config: Path | None = COMMON_CONFIG,
     env_file: Path | None = COMMON_ENV,
 ) -> None:
     cfg, engine = _runtime(config, env_file, "export-model-comparison")
+    if digitalocean_destination:
+        _select_digitalocean_spaces_destination(cfg)
     with session_scope(engine) as session:
         result = export_model_comparison(session, cfg, publish=publish)
     _emit(result)
