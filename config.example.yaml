@@ -536,7 +536,10 @@ locking:
 
 operations:
   profile: test
-  freshness_hours: 8
+  # Wiek pomiaru i ostatniego pobrania: fresh <=14 h, warning <=22 h,
+  # stale/block >22 h. Brak którejkolwiek daty oznacza missing.
+  freshness_hours: 14
+  freshness_stale_hours: 22
   serving_refresh_hours: 8
   regular_training_hours: 12
   heavy_training_hours: 28

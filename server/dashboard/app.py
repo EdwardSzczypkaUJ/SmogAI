@@ -53,14 +53,44 @@ PLOTLY_CHART_CONFIG: dict[str, Any] = {
     "modeBarButtonsToRemove": ["lasso2d", "select2d"],
 }
 
-# Default public list price for gpt-4.1-mini (USD per 1M tokens).  Production
-# can override both values in the environment without rebuilding the image.
+# Standard API list price for gpt-5.4-mini (USD per 1M tokens), verified in the
+# official OpenAI model documentation on 2026-08-17. Production can override
+# the values without rebuilding the image when a contract or price changes.
+OPENAI_PRICED_MODEL = os.getenv("SMOG_AI_OPENAI_PRICED_MODEL", "gpt-5.4-mini")
 OPENAI_INPUT_USD_PER_1M = float(
-    os.getenv("SMOG_AI_OPENAI_INPUT_USD_PER_1M", "0.40")
+    os.getenv("SMOG_AI_OPENAI_INPUT_USD_PER_1M", "0.75")
+)
+OPENAI_CACHED_INPUT_USD_PER_1M = float(
+    os.getenv("SMOG_AI_OPENAI_CACHED_INPUT_USD_PER_1M", "0.075")
 )
 OPENAI_OUTPUT_USD_PER_1M = float(
-    os.getenv("SMOG_AI_OPENAI_OUTPUT_USD_PER_1M", "1.60")
+    os.getenv("SMOG_AI_OPENAI_OUTPUT_USD_PER_1M", "4.50")
 )
+OPENAI_PRICE_SOURCE = os.getenv(
+    "SMOG_AI_OPENAI_PRICE_SOURCE",
+    "OpenAI Docs: developers.openai.com/api/docs/models/gpt-5.4-mini",
+)
+OPENAI_PRICE_EFFECTIVE_DATE = os.getenv(
+    "SMOG_AI_OPENAI_PRICE_EFFECTIVE_DATE", "2026-08-17"
+)
+OPENAI_MODEL_PRICES: dict[str, dict[str, Any]] = {
+    "gpt-5.5": {"input": 5.00, "cached_input": 0.50, "output": 30.00},
+    "gpt-5.4": {"input": 2.50, "cached_input": 0.25, "output": 15.00},
+    "gpt-5.4-mini": {
+        "input": OPENAI_INPUT_USD_PER_1M,
+        "cached_input": OPENAI_CACHED_INPUT_USD_PER_1M,
+        "output": OPENAI_OUTPUT_USD_PER_1M,
+    },
+    "gpt-5.4-nano": {"input": 0.20, "cached_input": 0.02, "output": 1.25},
+    "gpt-5.2": {"input": 1.75, "cached_input": 0.175, "output": 14.00},
+    "gpt-5.2-pro": {"input": 21.00, "cached_input": None, "output": 168.00},
+    "gpt-5-mini": {"input": 0.25, "cached_input": 0.025, "output": 2.00},
+    "gpt-5-nano": {"input": 0.05, "cached_input": 0.005, "output": 0.40},
+    "gpt-4.1": {"input": 2.00, "cached_input": 0.50, "output": 8.00},
+    "gpt-4.1-mini": {"input": 0.40, "cached_input": 0.10, "output": 1.60},
+    "gpt-4o": {"input": 2.50, "cached_input": 1.25, "output": 10.00},
+    "gpt-4o-mini": {"input": 0.15, "cached_input": 0.075, "output": 0.60},
+}
 USD_PLN_RATE = float(os.getenv("SMOG_AI_USD_PLN_RATE", "0") or 0)
 LANGFUSE_PLAN_NAME = os.getenv("SMOG_AI_LANGFUSE_PLAN_NAME", "Hobby / własne konto")
 LANGFUSE_MONTHLY_USD = float(os.getenv("SMOG_AI_LANGFUSE_MONTHLY_USD", "0") or 0)
@@ -90,27 +120,99 @@ DIGITALOCEAN_USAGE_SOURCE = os.getenv(
 )
 
 
+def _model_price(model: str) -> dict[str, Any]:
+    normalized = str(model or "unknown").strip().lower()
+    for catalog_model in sorted(OPENAI_MODEL_PRICES, key=len, reverse=True):
+        is_snapshot = normalized.startswith(catalog_model + "-") and (
+            normalized[len(catalog_model) + 1 : len(catalog_model) + 2].isdigit()
+        )
+        if normalized == catalog_model or is_snapshot:
+            return {
+                "model": normalized,
+                "catalog_model": catalog_model,
+                "known": True,
+                **OPENAI_MODEL_PRICES[catalog_model],
+            }
+    return {
+        "model": normalized,
+        "catalog_model": normalized,
+        "known": False,
+        "input": 0.0,
+        "cached_input": 0.0,
+        "output": 0.0,
+    }
+
+
+def _model_token_cost(
+    model: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    cached_input_tokens: int = 0,
+) -> dict[str, Any]:
+    price = _model_price(model)
+    cached = max(0, min(int(cached_input_tokens or 0), int(prompt_tokens or 0)))
+    regular = max(0, int(prompt_tokens or 0) - cached)
+    cached_rate = price["cached_input"]
+    if cached_rate is None:
+        cached_rate = price["input"]
+    usd = (
+        regular * float(price["input"])
+        + cached * float(cached_rate)
+        + int(completion_tokens or 0) * float(price["output"])
+    ) / 1_000_000
+    return {**price, "usd": usd, "price_status": (
+        "cennik znany" if price["known"] else "brak stawki — przyjęto 0 USD"
+    )}
+
+
+def _history_cost_estimate(
+    models: dict[str, int], prompt_tokens: int, completion_tokens: int
+) -> dict[str, Any]:
+    total_weight = sum(max(0, int(value or 0)) for value in models.values())
+    if total_weight <= 0:
+        return {"usd": 0.0, "unknown_models": [], "basis": "brak modeli"}
+    weighted_input = 0.0
+    weighted_output = 0.0
+    unknown_models = []
+    for model, count in models.items():
+        weight = max(0, int(count or 0)) / total_weight
+        price = _model_price(model)
+        weighted_input += weight * float(price["input"])
+        weighted_output += weight * float(price["output"])
+        if not price["known"]:
+            unknown_models.append(model)
+    usd = (
+        int(prompt_tokens or 0) * weighted_input
+        + int(completion_tokens or 0) * weighted_output
+    ) / 1_000_000
+    return {
+        "usd": usd,
+        "unknown_models": sorted(unknown_models),
+        "basis": "stawki ważone udziałem zapytań per model",
+    }
+
+
 def _query_cost(response: dict[str, Any]) -> dict[str, Any]:
     interpretation = dict(response.get("interpretation") or {})
     prompt_tokens = int(interpretation.get("prompt_tokens") or 0)
     completion_tokens = int(interpretation.get("completion_tokens") or 0)
     provider = str(interpretation.get("provider") or "unknown")
     model = str(interpretation.get("model") or "—")
-    if provider != "openai_compatible" or not (prompt_tokens or completion_tokens):
+    is_openai = provider.strip().lower() in {"openai", "openai_compatible"}
+    if not is_openai:
         return {
             "provider": provider, "model": model,
             "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
-            "usd": 0.0 if provider != "openai_compatible" else None,
-            "priced": provider != "openai_compatible",
+            "usd": 0.0, "priced": True, "price_known": True,
+            "price_status": "provider bez kosztu OpenAI",
         }
-    usd = (
-        prompt_tokens * OPENAI_INPUT_USD_PER_1M
-        + completion_tokens * OPENAI_OUTPUT_USD_PER_1M
-    ) / 1_000_000
+    estimate = _model_token_cost(model, prompt_tokens, completion_tokens)
     return {
         "provider": provider, "model": model,
         "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
-        "usd": usd, "priced": True,
+        "usd": float(estimate["usd"]), "priced": True,
+        "price_known": bool(estimate["known"]),
+        "price_status": estimate["price_status"],
     }
 
 
@@ -129,6 +231,7 @@ def _render_cost_center(
     current_response: dict[str, Any],
     *,
     nlp_provider: str,
+    operations: dict[str, Any] | None = None,
 ) -> None:
     primary = dict(quality.get("primary") or {})
     remote = dict(quality.get("remote") or {})
@@ -137,7 +240,32 @@ def _render_cost_center(
         "provider": "—", "model": "—", "prompt_tokens": 0,
         "completion_tokens": 0, "usd": None, "priced": False,
     }
-    openai_enabled = str(nlp_provider).strip().lower() == "openai_compatible"
+    openai_enabled = str(nlp_provider).strip().lower() in {
+        "openai", "openai_compatible"
+    }
+    observed_models = {
+        str(name): int(count or 0)
+        for name, count in dict(interactions.get("models") or {}).items()
+        if int(count or 0) > 0
+    }
+    prompt_total = int(interactions.get("prompt_tokens") or 0)
+    completion_total = int(interactions.get("completion_tokens") or 0)
+    tokenized = int(interactions.get("tokenized_interactions") or 0)
+    history_estimate = _history_cost_estimate(
+        observed_models, prompt_total, completion_total
+    )
+    measured_cost = float(history_estimate["usd"])
+    comparison_models = sorted(set(OPENAI_MODEL_PRICES) | set(observed_models))
+    selected_model_default = (
+        OPENAI_PRICED_MODEL
+        if OPENAI_PRICED_MODEL in comparison_models
+        else comparison_models[0]
+    )
+    selected_model = selected_model_default
+    selected_monthly_queries = EXPECTED_MONTHLY_QUERIES
+    digitalocean_measured = dict(
+        dict((operations or {}).get("finops") or {}).get("digitalocean") or {}
+    )
 
     st.subheader("Koszty i wykorzystanie usług")
     st.caption(
@@ -151,14 +279,8 @@ def _render_cost_center(
     ])
 
     with openai_tab:
-        prompt_total = int(interactions.get("prompt_tokens") or 0)
-        completion_total = int(interactions.get("completion_tokens") or 0)
-        tokenized = int(interactions.get("tokenized_interactions") or 0)
-        measured_cost = (
-            prompt_total * OPENAI_INPUT_USD_PER_1M
-            + completion_total * OPENAI_OUTPUT_USD_PER_1M
-        ) / 1_000_000
         if not openai_enabled:
+            measured_cost = 0.0
             st.info(
                 "OpenAI jest wyłączone w oszczędnym profilu testowym. "
                 "Zapytania interpretuje parser regułowy, dlatego użycie tokenów "
@@ -169,12 +291,178 @@ def _render_cost_center(
                 "OpenAI jest skonfigurowane, ale agregat nie zawiera jeszcze "
                 "rekordów usage. Koszt nie zostanie oszacowany bez liczby tokenów."
             )
+        elif history_estimate["unknown_models"]:
+            st.warning(
+                "Dla modeli bez rozpoznanej stawki przyjęto 0 USD: "
+                + ", ".join(history_estimate["unknown_models"])
+                + ". Zero oznacza brak cennika, a nie model darmowy."
+            )
         cards = st.columns(5)
         cards[0].metric("Zapytania zapisane", int(interactions.get("count") or 0))
         cards[1].metric("Z licznikiem tokenów", tokenized)
         cards[2].metric("Tokeny wejściowe", f"{prompt_total:,}".replace(",", " "))
         cards[3].metric("Tokeny wyjściowe", f"{completion_total:,}".replace(",", " "))
-        cards[4].metric("Koszt zapisanej historii", _money(measured_cost))
+        cards[4].metric(
+            "Koszt zapisanej historii",
+            _money(measured_cost) if measured_cost is not None else "brak cennika",
+        )
+        st.caption(
+            f"Katalog stawek per model · stan na {OPENAI_PRICE_EFFECTIVE_DATE}. "
+            f"Źródło: {OPENAI_PRICE_SOURCE}. "
+            "Agregat nie rozdziela jeszcze wejścia z cache, więc całe wejście "
+            "jest liczone według wyższej stawki standardowej."
+        )
+
+        st.markdown("#### Porównanie kosztu modeli dla tego samego użycia")
+        scenario_controls = st.columns([2, 1])
+        selected_model = scenario_controls[0].selectbox(
+            "Model wariantu kosztowego",
+            comparison_models,
+            index=comparison_models.index(selected_model_default),
+            key="finops_pricing_model",
+        )
+        selected_monthly_queries = int(scenario_controls[1].number_input(
+            "Zapytania / miesiąc",
+            min_value=0,
+            max_value=10_000_000,
+            value=max(0, EXPECTED_MONTHLY_QUERIES),
+            step=100,
+            key="finops_monthly_queries",
+        ))
+        average_prompt = prompt_total / tokenized if tokenized else 0.0
+        average_completion = completion_total / tokenized if tokenized else 0.0
+        comparison_rows = []
+        for model_name in comparison_models:
+            price = _model_price(model_name)
+            same_usage = _model_token_cost(
+                model_name, prompt_total, completion_total
+            )
+            monthly = _model_token_cost(
+                model_name,
+                round(average_prompt * selected_monthly_queries),
+                round(average_completion * selected_monthly_queries),
+            )
+            comparison_rows.append({
+                "Model": model_name,
+                "Status stawki": (
+                    "znana" if price["known"] else "brak — przyjęto 0"
+                ),
+                "Wejście USD / 1M": float(price["input"]),
+                "Cache USD / 1M": (
+                    float(price["cached_input"])
+                    if price["cached_input"] is not None else None
+                ),
+                "Wyjście USD / 1M": float(price["output"]),
+                "Koszt zapisanych tokenów USD": float(same_usage["usd"]),
+                "Prognoza miesięczna USD": float(monthly["usd"]),
+            })
+        comparison_frame = pd.DataFrame(comparison_rows)
+        selected_row = comparison_frame[
+            comparison_frame["Model"] == selected_model
+        ].iloc[0]
+        selected_cards = st.columns(4)
+        selected_cards[0].metric("Wybrany model", selected_model)
+        selected_cards[1].metric(
+            "To samo użycie", _money(float(selected_row["Koszt zapisanych tokenów USD"]))
+        )
+        selected_cards[2].metric(
+            "Prognoza / miesiąc", _money(float(selected_row["Prognoza miesięczna USD"]))
+        )
+        selected_cards[3].metric("Status", str(selected_row["Status stawki"]))
+
+        price_figure = go.Figure()
+        price_figure.add_bar(
+            x=comparison_frame["Model"],
+            y=comparison_frame["Wejście USD / 1M"],
+            name="Wejście / 1M",
+            marker_color="#4f7cff",
+        )
+        price_figure.add_bar(
+            x=comparison_frame["Model"],
+            y=comparison_frame["Wyjście USD / 1M"],
+            name="Wyjście / 1M",
+            marker_color="#43e0c0",
+        )
+        price_figure.update_layout(
+            title="Stawki modeli — wejście i wyjście",
+            barmode="group",
+            yaxis_title="USD / 1 mln tokenów",
+            xaxis_tickangle=-35,
+            height=440,
+            legend=dict(orientation="h"),
+        )
+        st.plotly_chart(price_figure, width="stretch", config=PLOTLY_CHART_CONFIG)
+
+        usage_cost_figure = go.Figure(go.Bar(
+            x=comparison_frame["Model"],
+            y=comparison_frame["Prognoza miesięczna USD"],
+            marker_color=[
+                "#43e0c0" if status == "znana" else "#7b8496"
+                for status in comparison_frame["Status stawki"]
+            ],
+            text=[_money(float(value)) for value in comparison_frame[
+                "Prognoza miesięczna USD"
+            ]],
+            textposition="outside",
+        ))
+        usage_cost_figure.update_layout(
+            title=f"Koszt porównawczy dla {selected_monthly_queries:,} zapytań / miesiąc",
+            yaxis_title="USD / miesiąc",
+            xaxis_tickangle=-35,
+            height=440,
+        )
+        st.plotly_chart(
+            usage_cost_figure, width="stretch", config=PLOTLY_CHART_CONFIG
+        )
+        st.dataframe(comparison_frame, hide_index=True, width="stretch")
+        st.caption(
+            "Modele bez znanej stawki pozostają w porównaniu z wartością 0 USD "
+            "i statusem „brak — przyjęto 0”; nie są prezentowane jako darmowe."
+        )
+        usage_charts = st.columns(2)
+        if observed_models:
+            model_usage_figure = go.Figure(
+                go.Pie(
+                    labels=list(observed_models),
+                    values=list(observed_models.values()),
+                    hole=0.6,
+                    textinfo="label+percent",
+                )
+            )
+            model_usage_figure.update_layout(
+                title="Modele w zapisanej historii",
+                height=350,
+                margin=dict(l=10, r=10, t=60, b=10),
+            )
+            usage_charts[0].plotly_chart(
+                model_usage_figure,
+                width="stretch",
+                config=PLOTLY_CHART_CONFIG,
+            )
+        provider_usage = {
+            str(name): int(count or 0)
+            for name, count in dict(interactions.get("providers") or {}).items()
+            if int(count or 0) > 0
+        }
+        if provider_usage:
+            provider_usage_figure = go.Figure(
+                go.Pie(
+                    labels=list(provider_usage),
+                    values=list(provider_usage.values()),
+                    hole=0.6,
+                    textinfo="label+percent",
+                )
+            )
+            provider_usage_figure.update_layout(
+                title="Faktyczni providerzy interpretacji",
+                height=350,
+                margin=dict(l=10, r=10, t=60, b=10),
+            )
+            usage_charts[1].plotly_chart(
+                provider_usage_figure,
+                width="stretch",
+                config=PLOTLY_CHART_CONFIG,
+            )
         if (
             current_cost.get("prompt_tokens")
             and not int(interactions.get("tokenized_interactions") or 0)
@@ -191,8 +479,8 @@ def _render_cost_center(
             current_columns[2].metric("Wyjście", current_cost["completion_tokens"])
             current_columns[3].metric(
                 "Koszt bieżącego zapytania",
-                _money(float(current_cost["usd"]))
-                if current_cost["usd"] is not None else "brak usage",
+                _money(float(current_cost["usd"])),
+                help=str(current_cost.get("price_status") or ""),
             )
         daily_rows = []
         for day, row in sorted(dict(interactions.get("daily") or {}).items()):
@@ -204,9 +492,10 @@ def _render_cost_center(
                 "Tokeny wejściowe": prompt,
                 "Tokeny wyjściowe": completion,
                 "Koszt USD": (
-                    prompt * OPENAI_INPUT_USD_PER_1M
-                    + completion * OPENAI_OUTPUT_USD_PER_1M
-                ) / 1_000_000,
+                    _history_cost_estimate(
+                        observed_models, prompt, completion
+                    )["usd"]
+                ),
             })
         if daily_rows:
             daily = pd.DataFrame(daily_rows)
@@ -260,41 +549,123 @@ def _render_cost_center(
             st.warning("Połączenie z opcjonalnym Langfuse jest chwilowo niedostępne.")
 
     with digitalocean_tab:
+        latest_transfer = dict(digitalocean_measured.get("latest") or {})
         do_cards = st.columns(5)
         do_cards[0].metric("App Platform / mies.", _money(DIGITALOCEAN_APP_MONTHLY_USD))
         do_cards[1].metric("Spaces / mies.", _money(DIGITALOCEAN_SPACES_MONTHLY_USD))
-        do_cards[2].metric("Spaces zajętość", f"{DIGITALOCEAN_SPACES_STORAGE_USED_GB:.2f} GB")
-        do_cards[3].metric("Transfer Spaces", f"{DIGITALOCEAN_SPACES_TRANSFER_USED_GB:.2f} GB")
-        do_cards[4].metric("Transfer aplikacji", f"{DIGITALOCEAN_APP_TRANSFER_USED_GB:.2f} GB")
+        do_cards[2].metric(
+            "Ostatni upload (pomiar)",
+            (
+                f"{float(latest_transfer['bytes_uploaded']) / (1024 ** 2):.2f} MiB"
+                if latest_transfer.get("bytes_uploaded") is not None
+                else "brak danych"
+            ),
+        )
+        do_cards[3].metric(
+            "Obiekty wysłane", latest_transfer.get("objects_uploaded", "—")
+        )
+        do_cards[4].metric(
+            "Obiekty użyte ponownie", latest_transfer.get("objects_reused", "—")
+        )
+        if digitalocean_measured.get("status") == "measured":
+            st.success(
+                "Transfer publikacji jest zmierzony z lokalnych raportów "
+                "DigitalOcean; kwoty planów nadal są konfiguracją, nie fakturą."
+            )
+            transfer_rows = []
+            for row in list(digitalocean_measured.get("daily") or []):
+                transfer_rows.append(
+                    {
+                        "Okres": row.get("period"),
+                        "Publikacje": row.get("publication_count"),
+                        "Wysłano MiB": (
+                            float(row.get("bytes_uploaded") or 0) / (1024 ** 2)
+                        ),
+                        "Obiekty wysłane": row.get("objects_uploaded"),
+                        "Obiekty ponownie użyte": row.get("objects_reused"),
+                        "Minimalna liczba requestów": row.get(
+                            "request_count_minimum"
+                        ),
+                    }
+                )
+            if transfer_rows:
+                transfer_frame = pd.DataFrame(transfer_rows)
+                transfer_figure = go.Figure()
+                transfer_figure.add_bar(
+                    x=transfer_frame["Okres"],
+                    y=transfer_frame["Wysłano MiB"],
+                    name="Wysłano do Spaces",
+                    marker_color="#4f7cff",
+                )
+                transfer_figure.add_scatter(
+                    x=transfer_frame["Okres"],
+                    y=transfer_frame["Publikacje"],
+                    name="Publikacje",
+                    yaxis="y2",
+                    mode="lines+markers",
+                    line=dict(color="#43e0c0", width=3),
+                )
+                transfer_figure.update_layout(
+                    title="Dzienny transfer publikacji do DigitalOcean Spaces",
+                    yaxis_title="MiB",
+                    yaxis2=dict(
+                        title="publikacje", overlaying="y", side="right"
+                    ),
+                    legend=dict(orientation="h"),
+                )
+                st.plotly_chart(
+                    transfer_figure,
+                    width="stretch",
+                    config=PLOTLY_CHART_CONFIG,
+                )
+                st.dataframe(transfer_frame, hide_index=True, width="stretch")
+            monthly_transfer_rows = [
+                {
+                    "Miesiąc": row.get("period"),
+                    "Publikacje": row.get("publication_count"),
+                    "Wysłano GiB": (
+                        float(row.get("bytes_uploaded") or 0) / (1024 ** 3)
+                    ),
+                    "Obiekty wysłane": row.get("objects_uploaded"),
+                    "Obiekty ponownie użyte": row.get("objects_reused"),
+                    "Requesty / minimum": row.get("request_count"),
+                }
+                for row in list(digitalocean_measured.get("monthly") or [])
+            ]
+            if monthly_transfer_rows:
+                st.markdown("#### Sumy miesięczne transferu Spaces")
+                st.dataframe(
+                    pd.DataFrame(monthly_transfer_rows),
+                    hide_index=True,
+                    width="stretch",
+                )
+            st.caption(
+                "Starsze raporty nie mają jeszcze czasu, przepustowości ani "
+                "podziału bajtów na kategorie. Panel oznacza te pola jako brak "
+                "pomiaru zamiast wpisywać zero."
+            )
         if DIGITALOCEAN_USAGE_SOURCE == "not_connected":
             st.warning(
                 "Metryki użycia DigitalOcean nie są jeszcze połączone z API DigitalOcean. "
-                "Wartości 0 GB oznaczają brak pomiaru, a nie brak transferu."
+                "Zajętość Spaces i transfer aplikacji pozostają niezmierzone; "
+                "wartości 0 GB z konfiguracji nie oznaczają braku transferu."
             )
         else:
             st.success(f"Źródło metryk DigitalOcean: {DIGITALOCEAN_USAGE_SOURCE}")
-        usage_figure = go.Figure(go.Bar(
-            x=["Zajętość Spaces", "Transfer Spaces", "Transfer aplikacji"],
-            y=[
-                DIGITALOCEAN_SPACES_STORAGE_USED_GB,
-                DIGITALOCEAN_SPACES_TRANSFER_USED_GB,
-                DIGITALOCEAN_APP_TRANSFER_USED_GB,
-            ],
-            marker_color=["#43e0c0", "#4f7cff", "#ffbf69"],
-            texttemplate="%{y:.2f} GB", textposition="outside",
-        ))
-        usage_figure.update_layout(title="Wykorzystanie DigitalOcean", yaxis_title="GB")
-        st.plotly_chart(usage_figure, width="stretch", config=PLOTLY_CHART_CONFIG)
+        st.caption(
+            "Konfiguracja ręczna (nie pomiar): zajętość Spaces "
+            f"{DIGITALOCEAN_SPACES_STORAGE_USED_GB:.2f} GB, transfer Spaces "
+            f"{DIGITALOCEAN_SPACES_TRANSFER_USED_GB:.2f} GB, transfer aplikacji "
+            f"{DIGITALOCEAN_APP_TRANSFER_USED_GB:.2f} GB."
+        )
 
     with summary_tab:
-        prompt_total = int(interactions.get("prompt_tokens") or 0)
-        completion_total = int(interactions.get("completion_tokens") or 0)
-        tokenized = int(interactions.get("tokenized_interactions") or 0)
-        measured_openai = (
-            prompt_total * OPENAI_INPUT_USD_PER_1M
-            + completion_total * OPENAI_OUTPUT_USD_PER_1M
-        ) / 1_000_000
-        average_openai = measured_openai / tokenized if tokenized else None
+        measured_openai = measured_cost if tokenized else None
+        average_openai = (
+            measured_openai / tokenized
+            if tokenized and measured_openai is not None
+            else None
+        )
         # Prefer the average of all recorded, tokenized requests.  Immediately
         # after the first request the aggregate can still lag behind, so the
         # current request is a useful, explicitly labelled fallback.
@@ -303,14 +674,31 @@ def _render_cost_center(
             average_openai = float(current_cost["usd"])
             projection_basis = "bieżące zapytanie (agregat jeszcze pusty)"
         if not openai_enabled:
+            measured_openai = 0.0
             average_openai = 0.0
             projected_openai = 0.0
             projection_basis = "OpenAI wyłączone; parser regułowy"
         else:
-            projected_openai = (
-                average_openai * EXPECTED_MONTHLY_QUERIES
-                if average_openai is not None else None
-            )
+            if tokenized:
+                projected_openai = float(_model_token_cost(
+                    selected_model,
+                    round((prompt_total / tokenized) * selected_monthly_queries),
+                    round((completion_total / tokenized) * selected_monthly_queries),
+                )["usd"])
+                projection_basis = (
+                    f"wariant {selected_model}; średnie użycie tokenów z historii"
+                )
+            elif current_response:
+                projected_openai = float(_model_token_cost(
+                    selected_model,
+                    int(current_cost.get("prompt_tokens") or 0)
+                    * selected_monthly_queries,
+                    int(current_cost.get("completion_tokens") or 0)
+                    * selected_monthly_queries,
+                )["usd"])
+                projection_basis = f"wariant {selected_model}; bieżące zapytanie"
+            else:
+                projected_openai = None
         fixed_do = (
             DIGITALOCEAN_APP_MONTHLY_USD + DIGITALOCEAN_SPACES_MONTHLY_USD
             + DIGITALOCEAN_OVERAGE_MONTHLY_USD
@@ -321,7 +709,7 @@ def _render_cost_center(
                 "Koszt zmierzony USD": measured_openai,
                 "Prognoza USD / miesiąc": projected_openai,
                 "Podstawa": (
-                    f"{projection_basis}; {EXPECTED_MONTHLY_QUERIES} zapytań/mies."
+                    f"{projection_basis}; {selected_monthly_queries} zapytań/mies."
                     if projected_openai is not None else "brak zapisanych tokenów"
                 ),
             },
@@ -343,7 +731,8 @@ def _render_cost_center(
         known = frame["Prognoza USD / miesiąc"].dropna().sum()
         summary_cards = st.columns(3)
         summary_cards[0].metric(
-            "OpenAI — koszt zapisanej historii", _money(measured_openai)
+            "OpenAI — koszt zapisanej historii",
+            _money(measured_openai) if measured_openai is not None else "brak cennika",
         )
         summary_cards[1].metric(
             "OpenAI — prognoza miesięczna",
@@ -352,9 +741,73 @@ def _render_cost_center(
         summary_cards[2].metric(
             "Suma prognozowana / miesiąc", _money(float(known))
         )
+        projected_rows = frame.dropna(subset=["Prognoza USD / miesiąc"])
+        if not projected_rows.empty:
+            composition_figure = go.Figure(
+                go.Pie(
+                    labels=projected_rows["Usługa"],
+                    values=projected_rows["Prognoza USD / miesiąc"],
+                    hole=0.62,
+                    textinfo="label+value+percent",
+                    texttemplate="%{label}<br>$%{value:.2f}<br>%{percent}",
+                )
+            )
+            composition_figure.update_layout(
+                title="Struktura prognozowanych kosztów miesięcznych",
+                height=420,
+            )
+            st.plotly_chart(
+                composition_figure,
+                width="stretch",
+                config=PLOTLY_CHART_CONFIG,
+            )
+        scenario_prompt_per_query = (
+            average_prompt
+            if tokenized else float(current_cost.get("prompt_tokens") or 0)
+        )
+        scenario_completion_per_query = (
+            average_completion
+            if tokenized else float(current_cost.get("completion_tokens") or 0)
+        )
+        if tokenized or current_response:
+            scenario_queries = [100, 500, 1000, 5000, 10000]
+            scenario_openai = [
+                float(_model_token_cost(
+                    selected_model,
+                    round(scenario_prompt_per_query * count),
+                    round(scenario_completion_per_query * count),
+                )["usd"])
+                for count in scenario_queries
+            ]
+            scenario_figure = go.Figure()
+            scenario_figure.add_bar(
+                x=scenario_queries,
+                y=[fixed_do + LANGFUSE_MONTHLY_USD] * len(scenario_queries),
+                name="Koszty stałe / konfigurowane",
+                marker_color="#4f7cff",
+            )
+            scenario_figure.add_bar(
+                x=scenario_queries,
+                y=scenario_openai,
+                name=f"OpenAI — {selected_model}",
+                marker_color="#43e0c0",
+            )
+            scenario_figure.update_layout(
+                title="Scenariusze kosztu względem liczby zapytań",
+                xaxis_title="Zapytania / miesiąc",
+                yaxis_title="USD / miesiąc",
+                barmode="stack",
+                legend=dict(orientation="h"),
+            )
+            st.plotly_chart(
+                scenario_figure,
+                width="stretch",
+                config=PLOTLY_CHART_CONFIG,
+            )
         st.caption(
-            "Prognoza OpenAI = średni koszt zapisanego zapytania z tokenami × "
-            f"{EXPECTED_MONTHLY_QUERIES} zapytań/mies. Koszty Langfuse i "
+            "Prognoza OpenAI wykorzystuje średnie użycie tokenów oraz stawkę "
+            f"wybranego modelu ({selected_model}) dla "
+            f"{selected_monthly_queries} zapytań/mies. Koszty Langfuse i "
             "DigitalOcean pochodzą z konfiguracji i nie są fakturą."
         )
 
@@ -729,6 +1182,20 @@ def _model_freshness_label(row: dict[str, Any]) -> tuple[str, float | None]:
         "stale": "🔴 stary",
     }.get(status, "⚪ brak oceny")
     return label, age
+
+
+def _data_freshness_status(
+    age_hours: float | None,
+    fresh_hours: float,
+    stale_hours: float,
+) -> str:
+    if age_hours is None:
+        return "missing"
+    if age_hours <= fresh_hours:
+        return "fresh"
+    if age_hours <= stale_hours:
+        return "warning"
+    return "stale"
 
 
 def _parameter_meta(parameter: str) -> dict[str, Any]:
@@ -2328,10 +2795,12 @@ with map_tab:
             f"{float(st.session_state.get('point_longitude', picker_longitude)):.6f}"
         )
 
+    if "question" not in st.session_state:
+        st.session_state["question"] = DEFAULT_QUESTION
     with st.form("natural-language-query", clear_on_submit=False):
         question = st.text_input(
             "Zapytaj o miejsce i termin",
-            value=st.session_state.get("question", DEFAULT_QUESTION),
+            key="question",
             placeholder="Np. jutro o 17:00 w Krakowie — PM10, temperatura i deszcz",
             label_visibility="collapsed",
         )
@@ -2425,7 +2894,6 @@ with map_tab:
                     "parameters": proposed_parameters or ["PM10", "PM2.5"],
                 }
                 st.session_state.pop("query_result", None)
-                st.session_state["question"] = question
                 if use_exact_point:
                     st.session_state["point_name"] = point_name
                     st.session_state["point_latitude"] = point_latitude
@@ -3442,6 +3910,42 @@ def _candidate_frame(payload: dict[str, Any]) -> pd.DataFrame:
     return frame
 
 
+def _horizon_quality_frame(payload: dict[str, Any]) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for raw in list(payload.get("horizon_quality") or []):
+        row = dict(raw or {})
+        metrics = dict(row.get("metrics") or {})
+        rows.append(
+            {
+                "Target": row.get("target"),
+                "Model": row.get("provider"),
+                "Profil": row.get("profile"),
+                "Horyzont [h]": row.get("horizon_hours"),
+                "MAE": _model_quality_number(metrics.get("mae")),
+                "RMSE": _model_quality_number(metrics.get("rmse")),
+                "Bias": _model_quality_number(metrics.get("bias")),
+                "R²": _model_quality_number(metrics.get("r2")),
+                "MAPE": _model_quality_number(metrics.get("mape")),
+                "Persistence MAE": _model_quality_number(
+                    metrics.get("persistence_mae")
+                ),
+                "Poprawa vs persistence": _model_quality_number(
+                    metrics.get("mae_improvement_vs_persistence")
+                ),
+                "Liczba próbek": _model_quality_number(metrics.get("count")),
+                "Ewaluacja": row.get("evaluated_at"),
+            }
+        )
+    frame = pd.DataFrame(rows)
+    if not frame.empty:
+        frame["Horyzont [h]"] = pd.to_numeric(
+            frame["Horyzont [h]"], errors="coerce"
+        )
+        frame = frame.dropna(subset=["Target", "Model", "Horyzont [h]"])
+        frame["Horyzont [h]"] = frame["Horyzont [h]"].astype(int)
+    return frame
+
+
 def _model_history_frame(payload: dict[str, Any]) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     for model in list(payload.get("models") or []):
@@ -3499,6 +4003,7 @@ def render_ml_quality_overview() -> None:
         )
     active = list(active_payload.get("models") or [])
     candidates = _candidate_frame(comparison)
+    horizon_quality = _horizon_quality_frame(comparison)
     model_history = _model_history_frame(comparison)
     comparison_models = {
         str(row.get("target")): dict(row)
@@ -3563,8 +4068,9 @@ def render_ml_quality_overview() -> None:
             "klasyfikacyjnym modelu precipitation_mm, a nie piątym artefaktem."
         )
 
-    ranking_tab, active_tab, answer_tab, history_tab = st.tabs([
+    ranking_tab, horizon_tab, active_tab, answer_tab, history_tab = st.tabs([
         "🏆 Ranking i zwycięzcy",
+        "🗺️ Parametr × horyzont",
         "✅ Aktywne modele",
         "💬 Jakość odpowiedzi",
         "🧾 Historia i techniczne",
@@ -3573,10 +4079,127 @@ def render_ml_quality_overview() -> None:
         if candidates.empty:
             st.info("Brak runów kandydatów w opublikowanym artefakcie MLflow.")
         else:
+            # HF21_FINOPS_PRESENTATION_V2
+            # Zwarty widok prezentacyjny: jeden aktualny zwycięzca na parametr,
+            # a obok siebie porównywalne, znormalizowane metryki. Surowe wartości
+            # pozostają w dymkach i tabeli poniżej.
+            ranking_candidates = candidates.copy()
+            ranking_candidates["_start_order"] = pd.to_datetime(
+                ranking_candidates.get("Start"), utc=True, errors="coerce"
+            )
+            ranking_candidates = (
+                ranking_candidates.sort_values("_start_order", na_position="first")
+                .groupby(["Target", "Model"], as_index=False)
+                .tail(1)
+            )
+            current_winners = (
+                ranking_candidates[ranking_candidates["Wybrany"]]
+                .sort_values("_start_order", na_position="first")
+                .groupby("Target", as_index=False)
+                .tail(1)
+            )
+            winner_metric_directions = {
+                "MAE": "lower",
+                "RMSE": "lower",
+                "Poprawa vs persistence": "higher",
+            }
+            winner_score_rows: list[dict[str, Any]] = []
+            for _, winner in current_winners.iterrows():
+                target_name = str(winner["Target"])
+                target_candidates = ranking_candidates[
+                    ranking_candidates["Target"].astype(str) == target_name
+                ]
+                for metric_name, direction in winner_metric_directions.items():
+                    if metric_name not in target_candidates:
+                        continue
+                    raw_value = pd.to_numeric(
+                        pd.Series([winner.get(metric_name)]), errors="coerce"
+                    ).iloc[0]
+                    values = pd.to_numeric(
+                        target_candidates[metric_name], errors="coerce"
+                    ).dropna()
+                    if pd.isna(raw_value) or values.empty:
+                        continue
+                    minimum = float(values.min())
+                    maximum = float(values.max())
+                    if maximum == minimum:
+                        score = 100.0
+                    elif direction == "lower":
+                        score = 100.0 * (maximum - float(raw_value)) / (
+                            maximum - minimum
+                        )
+                    else:
+                        score = 100.0 * (float(raw_value) - minimum) / (
+                            maximum - minimum
+                        )
+                    winner_score_rows.append({
+                        "Parametr": target_name,
+                        "Model": str(winner["Model"]),
+                        "Metryka": metric_name,
+                        "Wynik porównawczy": max(0.0, min(100.0, score)),
+                        "Wartość surowa": float(raw_value),
+                    })
+
+            winner_scores = pd.DataFrame(winner_score_rows)
+            if not winner_scores.empty:
+                winner_overview = go.Figure()
+                winner_palette = {
+                    "MAE": "#43e0c0",
+                    "RMSE": "#4f7cff",
+                    "Poprawa vs persistence": "#ffbf69",
+                }
+                for metric_name in winner_metric_directions:
+                    metric_rows = winner_scores[
+                        winner_scores["Metryka"] == metric_name
+                    ]
+                    if metric_rows.empty:
+                        continue
+                    winner_overview.add_bar(
+                        name=metric_name,
+                        x=metric_rows["Parametr"],
+                        y=metric_rows["Wynik porównawczy"],
+                        marker_color=winner_palette[metric_name],
+                        customdata=metric_rows[["Model", "Wartość surowa"]],
+                        hovertemplate=(
+                            "Parametr: %{x}<br>Model: %{customdata[0]}<br>"
+                            + metric_name
+                            + ": %{customdata[1]:.4f}<br>Wynik porównawczy: "
+                            "%{y:.1f}/100<extra></extra>"
+                        ),
+                    )
+                winner_overview.update_layout(
+                    title=(
+                        "Zwycięzcy parametrów — kilka metryk obok siebie "
+                        "(100 = najlepszy kandydat dla danego parametru)"
+                    ),
+                    barmode="group",
+                    xaxis_title="Parametr prognozy",
+                    yaxis=dict(
+                        title="Względna jakość [0–100]",
+                        range=[0, 105],
+                        ticksuffix="",
+                    ),
+                    legend=dict(orientation="h", y=1.13),
+                    height=410,
+                    margin=dict(l=30, r=20, t=95, b=40),
+                )
+                st.plotly_chart(
+                    winner_overview,
+                    width="stretch",
+                    config=PLOTLY_CHART_CONFIG,
+                )
+                st.caption(
+                    "Kolory oznaczają metryki, grupy — parametry. Skala jest "
+                    "normalizowana osobno w obrębie parametru; wartości surowe "
+                    "MAE/RMSE i poprawy są dostępne po wskazaniu słupka."
+                )
+
             chosen_target = st.selectbox(
                 "Porównywany parametr", targets, key="model_ranking_target"
             )
-            subset = candidates[candidates["Target"].astype(str) == chosen_target].copy()
+            subset = ranking_candidates[
+                ranking_candidates["Target"].astype(str) == chosen_target
+            ].copy()
             available_metrics = [
                 metric for metric in (
                     "MAE", "RMSE", "Bias", "Poprawa vs persistence", "AUC", "Brier skill"
@@ -3589,7 +4212,7 @@ def render_ml_quality_overview() -> None:
             lower_is_better = metric in {"MAE", "RMSE"}
             chart = subset.dropna(subset=[metric]).sort_values(
                 metric, ascending=lower_is_better
-            )
+            ).head(10)
             for optional_column in ("Profil", "Status", "Run ID"):
                 if optional_column not in chart:
                     chart[optional_column] = None
@@ -3611,7 +4234,7 @@ def render_ml_quality_overview() -> None:
             ))
             figure.update_layout(
                 title=f"{chosen_target}: {metric} — {'mniej' if lower_is_better else 'więcej'} = lepiej",
-                xaxis_title=metric, yaxis_title="", height=max(360, 48 * len(chart)),
+                xaxis_title=metric, yaxis_title="", height=max(320, 34 * len(chart)),
                 margin=dict(l=20, r=20, t=70, b=30),
             )
             st.plotly_chart(figure, width="stretch", config=PLOTLY_CHART_CONFIG)
@@ -3665,13 +4288,39 @@ def render_ml_quality_overview() -> None:
                             "<br>Run: %{customdata[2]}<extra></extra>"
                         ),
                     )
+                pareto_rows: list[pd.Series] = []
+                best_rmse = math.inf
+                for _, pareto_candidate in scatter_rows.sort_values("MAE").iterrows():
+                    candidate_rmse = float(pareto_candidate["RMSE"])
+                    if candidate_rmse <= best_rmse:
+                        pareto_rows.append(pareto_candidate)
+                        best_rmse = candidate_rmse
+                if pareto_rows:
+                    pareto_frame = pd.DataFrame(pareto_rows).sort_values("MAE")
+                    scatter_figure.add_scatter(
+                        x=pareto_frame["MAE"],
+                        y=pareto_frame["RMSE"],
+                        mode="lines+markers",
+                        name="Front Pareto",
+                        line=dict(color="#ffbf69", width=3, dash="dash"),
+                        marker=dict(size=8, symbol="diamond", color="#ffbf69"),
+                        hovertemplate=(
+                            "Front Pareto<br>MAE: %{x:.4f}<br>"
+                            "RMSE: %{y:.4f}<extra></extra>"
+                        ),
+                    )
                 scatter_figure.update_layout(
-                    title="Kompromis MAE–RMSE", xaxis_title="MAE (mniej = lepiej)",
+                    title="Front Pareto: MAE i RMSE", xaxis_title="MAE (mniej = lepiej)",
                     yaxis_title="RMSE (mniej = lepiej)", height=430,
                 )
                 diagnostic_columns[0].plotly_chart(
                     scatter_figure, width="stretch",
                     config=PLOTLY_CHART_CONFIG,
+                )
+                diagnostic_columns[0].caption(
+                    "Lewy dolny narożnik jest najlepszy. Linia Pareto łączy "
+                    "kandydatów, których nie można poprawić w jednej metryce "
+                    "bez pogorszenia drugiej."
                 )
             heat_metrics = [
                 name for name in ("MAE", "RMSE", "Bias", "AUC", "Brier skill")
@@ -3711,6 +4360,164 @@ def render_ml_quality_overview() -> None:
                     config=PLOTLY_CHART_CONFIG,
                 )
 
+            radar_metrics = [
+                name
+                for name in (
+                    "MAE", "RMSE", "Poprawa vs persistence", "AUC", "Brier skill"
+                )
+                if name in subset and subset[name].notna().any()
+            ]
+            if len(radar_metrics) >= 3:
+                radar_rows = (
+                    subset.sort_values("Start", na_position="first")
+                    .groupby("Model", as_index=False)
+                    .tail(1)
+                )
+                radar_scores: dict[str, pd.Series] = {}
+                for metric_name in radar_metrics:
+                    values = pd.to_numeric(radar_rows[metric_name], errors="coerce")
+                    minimum = values.min()
+                    maximum = values.max()
+                    if pd.isna(minimum) or pd.isna(maximum):
+                        continue
+                    if maximum == minimum:
+                        normalised = values.map(
+                            lambda value: 1.0 if pd.notna(value) else None
+                        )
+                    elif metric_name in {"MAE", "RMSE"}:
+                        normalised = 1.0 - (values - minimum) / (maximum - minimum)
+                    else:
+                        normalised = (values - minimum) / (maximum - minimum)
+                    radar_scores[metric_name] = normalised
+                if len(radar_scores) >= 3:
+                    radar_figure = go.Figure()
+                    axes = list(radar_scores)
+                    for index, model_row in radar_rows.iterrows():
+                        scores = [radar_scores[name].loc[index] for name in axes]
+                        if any(pd.isna(value) for value in scores):
+                            continue
+                        radar_figure.add_trace(
+                            go.Scatterpolar(
+                                r=scores + [scores[0]],
+                                theta=axes + [axes[0]],
+                                fill="toself",
+                                name=str(model_row["Model"]),
+                                opacity=0.72,
+                            )
+                        )
+                    radar_figure.update_layout(
+                        title=f"Radar jakości modeli — {chosen_target}",
+                        polar=dict(
+                            radialaxis=dict(range=[0, 1], tickformat=".0%")
+                        ),
+                        legend=dict(orientation="h"),
+                        height=520,
+                    )
+                    st.plotly_chart(
+                        radar_figure,
+                        width="stretch",
+                        config=PLOTLY_CHART_CONFIG,
+                    )
+
+    with horizon_tab:
+        if horizon_quality.empty:
+            st.info(
+                "Macierz parametr × horyzont pojawi się po publikacji kontraktu "
+                "1.1-public z zagregowanymi metrykami zakończonych ewaluacji."
+            )
+        else:
+            horizon_targets = sorted(
+                str(value) for value in horizon_quality["Target"].dropna().unique()
+            )
+            horizon_target = st.selectbox(
+                "Parametr macierzy", horizon_targets, key="horizon_quality_target"
+            )
+            horizon_metric_options = [
+                metric
+                for metric in (
+                    "MAE", "RMSE", "Bias", "R²", "MAPE",
+                    "Poprawa vs persistence",
+                )
+                if metric in horizon_quality
+                and horizon_quality[metric].notna().any()
+            ]
+            horizon_metric = st.selectbox(
+                "Metryka macierzy",
+                horizon_metric_options or ["MAE"],
+                key="horizon_quality_metric",
+            )
+            horizon_subset = horizon_quality[
+                horizon_quality["Target"].astype(str) == horizon_target
+            ].copy()
+            matrix = horizon_subset.pivot_table(
+                index="Model",
+                columns="Horyzont [h]",
+                values=horizon_metric,
+                aggfunc="first",
+            ).sort_index()
+            if not matrix.empty:
+                horizon_figure = go.Figure(
+                    go.Heatmap(
+                        z=matrix.values,
+                        x=matrix.columns,
+                        y=matrix.index,
+                        colorscale=(
+                            "RdYlGn_r"
+                            if horizon_metric in {"MAE", "RMSE", "MAPE"}
+                            else "RdYlGn"
+                        ),
+                        colorbar=dict(title=horizon_metric),
+                        hovertemplate=(
+                            "Model: %{y}<br>Horyzont: %{x} h<br>"
+                            + horizon_metric
+                            + ": %{z:.4f}<extra></extra>"
+                        ),
+                    )
+                )
+                horizon_figure.update_layout(
+                    title=f"{horizon_target}: jakość modeli w horyzoncie 1–48 h",
+                    xaxis_title="Horyzont prognozy [h]",
+                    yaxis_title="Model",
+                    height=max(420, 58 * len(matrix.index)),
+                )
+                st.plotly_chart(
+                    horizon_figure,
+                    width="stretch",
+                    config=PLOTLY_CHART_CONFIG,
+                )
+
+            winner_rows = pd.DataFrame(list(comparison.get("horizon_winners") or []))
+            if not winner_rows.empty:
+                winner_rows = winner_rows[
+                    winner_rows["target"].astype(str) == horizon_target
+                ]
+                winner_counts = (
+                    winner_rows.groupby("provider")["horizon_hours"]
+                    .count()
+                    .sort_values(ascending=False)
+                )
+                winner_figure = go.Figure(
+                    go.Pie(
+                        labels=winner_counts.index,
+                        values=winner_counts.values,
+                        hole=0.58,
+                        textinfo="label+value",
+                    )
+                )
+                winner_figure.update_layout(
+                    title="Udział zwycięstw w poszczególnych horyzontach",
+                    height=390,
+                )
+                st.plotly_chart(
+                    winner_figure,
+                    width="stretch",
+                    config=PLOTLY_CHART_CONFIG,
+                )
+            st.caption(
+                "Widok zawiera tylko zagregowane metryki. Identyfikatory runów, "
+                "ścieżki, dane treningowe i pliki modeli nie są publikowane."
+            )
+
     with active_tab:
         cards: list[dict[str, Any]] = []
         for row in active:
@@ -3743,6 +4550,14 @@ def render_ml_quality_overview() -> None:
         else:
             st.dataframe(active_frame, hide_index=True, width="stretch")
             for row in active:
+                card = dict(row.get("card") or {})
+                comparison_model = comparison_models.get(
+                    str(row.get("target"))
+                ) or {}
+                metrics = {
+                    **dict(card.get("metrics") or {}),
+                    **dict(comparison_model.get("metrics") or {}),
+                }
                 quality = _active_model_quality(row, manifest)
                 badge = "🧪" if quality["experimental"] else "✅"
                 with st.expander(
@@ -4176,40 +4991,50 @@ with status_tab:
         serving_status = dict(operations.get("serving") or {})
 
         source_time = data_status.get("source_origin_time")
-        current_age = None
-        if source_time:
-            try:
-                parsed_source = datetime.fromisoformat(
-                    str(source_time).replace("Z", "+00:00")
-                )
-                current_age = max(
-                    0.0,
-                    (datetime.now(UTC) - parsed_source.astimezone(UTC)).total_seconds()
-                    / 3600.0,
-                )
-            except ValueError:
-                current_age = None
-        threshold = float(data_status.get("freshness_threshold_hours") or 8.0)
-        live_freshness = (
-            "fresh"
-            if current_age is not None and current_age <= threshold
-            else "warning"
-            if current_age is not None and current_age <= threshold * 2
-            else "stale"
-            if current_age is not None
-            else "unknown"
+        collection_time = data_status.get("last_collection_at")
+        measurement_age = _live_age_hours(source_time)
+        collection_age = _live_age_hours(collection_time)
+        fresh_threshold = float(
+            data_status.get("fresh_threshold_hours")
+            or data_status.get("freshness_threshold_hours")
+            or 14.0
+        )
+        stale_threshold = float(
+            data_status.get("stale_threshold_hours") or 22.0
+        )
+        measurement_freshness = _data_freshness_status(
+            measurement_age, fresh_threshold, stale_threshold
+        )
+        collection_freshness = _data_freshness_status(
+            collection_age, fresh_threshold, stale_threshold
+        )
+        freshness_rank = {"fresh": 0, "warning": 1, "stale": 2, "missing": 3}
+        statuses = [measurement_freshness]
+        if "last_collection_at" in data_status:
+            statuses.append(collection_freshness)
+        live_freshness = max(
+            statuses, key=lambda value: freshness_rank.get(value, 4)
         )
         freshness_icon = {
             "fresh": "🟢",
             "warning": "🟠",
             "stale": "🔴",
+            "missing": "🔴",
         }.get(live_freshness, "⚪")
 
         cards = st.columns(4)
         cards[0].metric(
             "Świeżość danych",
             f"{freshness_icon} {live_freshness}",
-            "—" if current_age is None else f"wiek {current_age:.1f} h / limit {threshold:g} h",
+            (
+                f"pomiar: {measurement_age:.1f} h; pobranie: "
+                f"{collection_age:.1f} h; fresh ≤{fresh_threshold:g} h, "
+                f"stale >{stale_threshold:g} h"
+                if measurement_age is not None and collection_age is not None
+                else f"pomiar: {measurement_age:.1f} h; brak wieku pobrania"
+                if measurement_age is not None
+                else "brak daty pomiaru"
+            ),
         )
         cards[1].metric(
             "Powierzchnie Serving v2",
@@ -4260,7 +5085,93 @@ with status_tab:
         freshness_checks = pd.DataFrame(
             list(collection_history.get("freshness_checks") or [])
         )
+        # HF21_FRESHNESS_HISTORY_SCHEMA_COMPAT_V1
+        if not freshness_checks.empty:
+            legacy_measurement_age = None
+            for legacy_column in ("maximum_age_hours", "age_hours"):
+                if legacy_column in freshness_checks.columns:
+                    legacy_measurement_age = pd.to_numeric(
+                        freshness_checks[legacy_column], errors="coerce"
+                    )
+                    break
+
+            if "maximum_measurement_age_hours" not in freshness_checks.columns:
+                freshness_checks["maximum_measurement_age_hours"] = (
+                    legacy_measurement_age
+                )
+            elif legacy_measurement_age is not None:
+                freshness_checks["maximum_measurement_age_hours"] = (
+                    pd.to_numeric(
+                        freshness_checks["maximum_measurement_age_hours"],
+                        errors="coerce",
+                    ).fillna(legacy_measurement_age)
+                )
+
+            history_defaults = {
+                "generated_at": None,
+                "source": "historia",
+                "status": "unknown",
+                "maximum_collection_age_hours": None,
+                "measurement_status": "unknown",
+                "collection_status": "missing",
+                "fresh_threshold_hours": fresh_threshold,
+                "stale_threshold_hours": stale_threshold,
+                "valid_rows": 0,
+                "last_collected_at": None,
+                "measurement_end": None,
+                "parameter_count": 0,
+            }
+            for column, default in history_defaults.items():
+                if column not in freshness_checks.columns:
+                    freshness_checks[column] = default
+                elif default is not None:
+                    freshness_checks[column] = freshness_checks[column].fillna(default)
+
+            for age_column in (
+                "maximum_measurement_age_hours",
+                "maximum_collection_age_hours",
+            ):
+                freshness_checks[age_column] = pd.to_numeric(
+                    freshness_checks[age_column], errors="coerce"
+                )
+
+            # Historia może pochodzić z wydań z dawnym progiem 8 h. Na wykresie
+            # wszystkie punkty klasyfikujemy według bieżącej polityki 14/22 h,
+            # aby kolor, status i linie progowe opisywały ten sam kontrakt.
+            freshness_checks["measurement_status"] = freshness_checks[
+                "maximum_measurement_age_hours"
+            ].map(
+                lambda value: _data_freshness_status(
+                    None if pd.isna(value) else float(value),
+                    fresh_threshold,
+                    stale_threshold,
+                )
+            )
+            freshness_checks["collection_status"] = freshness_checks[
+                "maximum_collection_age_hours"
+            ].map(
+                lambda value: _data_freshness_status(
+                    None if pd.isna(value) else float(value),
+                    fresh_threshold,
+                    stale_threshold,
+                )
+            )
+            freshness_checks["status"] = [
+                max(
+                    (measurement, collection),
+                    key=lambda value: freshness_rank.get(value, 4),
+                )
+                for measurement, collection in zip(
+                    freshness_checks["measurement_status"],
+                    freshness_checks["collection_status"],
+                    strict=True,
+                )
+            ]
+            freshness_checks["fresh_threshold_hours"] = fresh_threshold
+            freshness_checks["stale_threshold_hours"] = stale_threshold
+
         st.markdown("#### Historia pobrań i świeżości GIOŚ / IMGW")
+        st.caption("Wiek najnowszych danych w kolejnych aktualizacjach")
         if freshness_checks.empty:
             st.info(
                 "Historia pojawi się po kolejnych raportach świeżości. "
@@ -4270,36 +5181,263 @@ with status_tab:
             freshness_checks["generated_at"] = pd.to_datetime(
                 freshness_checks["generated_at"], utc=True, errors="coerce"
             )
+            live_rows: list[dict[str, Any]] = []
+            live_timestamp = pd.Timestamp.now(tz="UTC")
+            for source, source_history in freshness_checks.groupby("source"):
+                latest = source_history.sort_values(
+                    "generated_at", na_position="first"
+                ).iloc[-1]
+
+                def live_history_age(
+                    latest_row: pd.Series,
+                    timestamp_column: str,
+                    age_column: str,
+                ) -> float | None:
+                    timestamp_age = _live_age_hours(
+                        latest_row.get(timestamp_column)
+                    )
+                    if timestamp_age is not None:
+                        return timestamp_age
+                    recorded_age = pd.to_numeric(
+                        pd.Series([latest_row.get(age_column)]), errors="coerce"
+                    ).iloc[0]
+                    recorded_at = latest_row.get("generated_at")
+                    if pd.isna(recorded_age) or pd.isna(recorded_at):
+                        return None
+                    elapsed_since_check = max(
+                        0.0,
+                        (live_timestamp - recorded_at).total_seconds() / 3600.0,
+                    )
+                    return float(recorded_age) + elapsed_since_check
+
+                live_measurement_age = live_history_age(
+                    latest,
+                    "measurement_end", "maximum_measurement_age_hours"
+                )
+                live_collection_age = live_history_age(
+                    latest,
+                    "last_collected_at", "maximum_collection_age_hours"
+                )
+                live_measurement_status = _data_freshness_status(
+                    live_measurement_age, fresh_threshold, stale_threshold
+                )
+                live_collection_status = _data_freshness_status(
+                    live_collection_age, fresh_threshold, stale_threshold
+                )
+                live_rows.append({
+                    "generated_at": live_timestamp,
+                    "source": source,
+                    "status": max(
+                        (live_measurement_status, live_collection_status),
+                        key=lambda value: freshness_rank.get(value, 4),
+                    ),
+                    "maximum_measurement_age_hours": live_measurement_age,
+                    "maximum_collection_age_hours": live_collection_age,
+                    "measurement_status": live_measurement_status,
+                    "collection_status": live_collection_status,
+                    "fresh_threshold_hours": fresh_threshold,
+                    "stale_threshold_hours": stale_threshold,
+                    "valid_rows": latest.get("valid_rows"),
+                    "last_collected_at": latest.get("last_collected_at"),
+                    "measurement_end": latest.get("measurement_end"),
+                    "parameter_count": latest.get("parameter_count"),
+                    "point_kind": "TERAZ",
+                })
+
+            historical_points = freshness_checks.copy()
+            historical_points["point_kind"] = "kontrola historyczna"
+            live_freshness = pd.DataFrame(live_rows)
+            plotted_freshness = pd.concat(
+                [historical_points, live_freshness],
+                ignore_index=True,
+            ).sort_values(["source", "generated_at"])
+
+            current_bars: list[dict[str, Any]] = []
+            for row in live_rows:
+                current_bars.extend([
+                    {
+                        "Wskaźnik": f"{row['source']} — pomiar",
+                        "Wiek [h]": row["maximum_measurement_age_hours"],
+                        "Status": row["measurement_status"],
+                    },
+                    {
+                        "Wskaźnik": f"{row['source']} — pobranie",
+                        "Wiek [h]": row["maximum_collection_age_hours"],
+                        "Status": row["collection_status"],
+                    },
+                ])
+            current_frame = pd.DataFrame(current_bars).dropna(subset=["Wiek [h]"])
+            st.markdown("##### Aktualna świeżość — TERAZ")
+            st.caption(
+                "Wartości są przeliczane przy każdym odświeżeniu strony, a nie "
+                "kopiowane z czasu ostatniej publikacji."
+            )
+            if current_frame.empty:
+                st.warning("Brak znaczników czasu potrzebnych do obliczenia wieku teraz.")
+            else:
+                current_axis_maximum = max(
+                    stale_threshold * 1.18,
+                    float(current_frame["Wiek [h]"].max()) * 1.12,
+                    stale_threshold + 2.0,
+                )
+                status_colours = {
+                    "fresh": "#43e0c0",
+                    "warning": "#ffbf69",
+                    "stale": "#ff6b6b",
+                    "missing": "#8f9bb3",
+                }
+                current_figure = go.Figure(go.Bar(
+                    x=current_frame["Wiek [h]"],
+                    y=current_frame["Wskaźnik"],
+                    orientation="h",
+                    marker_color=[
+                        status_colours.get(str(status), "#8f9bb3")
+                        for status in current_frame["Status"]
+                    ],
+                    customdata=current_frame[["Status"]],
+                    text=current_frame["Wiek [h]"].map(lambda value: f"{value:.1f} h"),
+                    textposition="outside",
+                    hovertemplate=(
+                        "%{y}<br>Aktualny wiek: %{x:.2f} h<br>"
+                        "Status: %{customdata[0]}<extra></extra>"
+                    ),
+                ))
+                current_figure.add_vrect(
+                    x0=0, x1=fresh_threshold, fillcolor="#43e0c0",
+                    opacity=0.07, line_width=0, layer="below",
+                )
+                current_figure.add_vrect(
+                    x0=fresh_threshold, x1=stale_threshold, fillcolor="#ffbf69",
+                    opacity=0.09, line_width=0, layer="below",
+                )
+                current_figure.add_vrect(
+                    x0=stale_threshold, x1=current_axis_maximum, fillcolor="#ff6b6b",
+                    opacity=0.08, line_width=0, layer="below",
+                )
+                current_figure.add_vline(
+                    x=fresh_threshold, line_dash="dash", line_color="#ffbf69",
+                    annotation_text=f"warning od {fresh_threshold:g} h",
+                )
+                current_figure.add_vline(
+                    x=stale_threshold, line_dash="dash", line_color="#ff6b6b",
+                    annotation_text=f"blokada po {stale_threshold:g} h",
+                )
+                current_figure.update_layout(
+                    xaxis=dict(title="Aktualny wiek [h]", range=[0, current_axis_maximum]),
+                    yaxis=dict(title="", autorange="reversed"),
+                    height=max(280, 58 * len(current_frame)),
+                    showlegend=False,
+                    margin=dict(l=30, r=45, t=30, b=40),
+                )
+                st.plotly_chart(
+                    current_figure,
+                    width="stretch",
+                    config=PLOTLY_CHART_CONFIG,
+                )
+
             freshness_figure = go.Figure()
-            for source, group in freshness_checks.groupby("source"):
+            for source, group in plotted_freshness.groupby("source"):
+                marker_symbols = [
+                    "diamond" if kind == "TERAZ" else "circle"
+                    for kind in group["point_kind"]
+                ]
+                marker_sizes = [
+                    13 if kind == "TERAZ" else 7
+                    for kind in group["point_kind"]
+                ]
                 freshness_figure.add_scatter(
                     x=group["generated_at"],
-                    y=group["maximum_age_hours"],
+                    y=group["maximum_measurement_age_hours"],
                     mode="lines+markers",
-                    name=str(source),
+                    name=f"{source} — pomiar",
+                    marker=dict(symbol=marker_symbols, size=marker_sizes),
                     customdata=group[
-                        ["status", "last_collected_at", "valid_rows"]
+                        [
+                            "measurement_status", "measurement_end", "valid_rows",
+                            "point_kind",
+                        ]
                     ],
                     hovertemplate=(
-                        "%{x}<br>Wiek danych: %{y:.2f} h<br>Status: "
-                        "%{customdata[0]}<br>Ostatnie pobranie: %{customdata[1]}"
+                        "%{customdata[3]}<br>%{x}<br>Wiek pomiaru: %{y:.2f} h<br>Status: "
+                        "%{customdata[0]}<br>Ostatni pomiar: %{customdata[1]}"
                         "<br>Poprawne rekordy w bazie: %{customdata[2]}<extra></extra>"
                     ),
                 )
-            threshold_values = pd.to_numeric(
-                freshness_checks["threshold_hours"], errors="coerce"
-            ).dropna()
-            if not threshold_values.empty:
-                freshness_figure.add_hline(
-                    y=float(threshold_values.iloc[-1]),
-                    line_dash="dash",
-                    line_color="#ffbf69",
-                    annotation_text="limit świeżości",
+                freshness_figure.add_scatter(
+                    x=group["generated_at"],
+                    y=group["maximum_collection_age_hours"],
+                    mode="lines+markers",
+                    line=dict(dash="dot"),
+                    name=f"{source} — pobranie",
+                    marker=dict(symbol=marker_symbols, size=marker_sizes),
+                    customdata=group[
+                        ["collection_status", "last_collected_at", "point_kind"]
+                    ],
+                    hovertemplate=(
+                        "%{customdata[2]}<br>%{x}<br>Wiek pobrania: %{y:.2f} h<br>Status: "
+                        "%{customdata[0]}<br>Ostatnie pobranie: "
+                        "%{customdata[1]}<extra></extra>"
+                    ),
                 )
+            observed_ages = pd.concat(
+                [
+                    plotted_freshness["maximum_measurement_age_hours"],
+                    plotted_freshness["maximum_collection_age_hours"],
+                ],
+                ignore_index=True,
+            ).dropna()
+            observed_maximum = (
+                float(observed_ages.max()) if not observed_ages.empty else 0.0
+            )
+            freshness_axis_maximum = max(
+                stale_threshold * 1.18,
+                observed_maximum * 1.12,
+                stale_threshold + 2.0,
+            )
+            freshness_figure.add_hrect(
+                y0=0,
+                y1=fresh_threshold,
+                fillcolor="#43e0c0",
+                opacity=0.07,
+                line_width=0,
+                layer="below",
+            )
+            freshness_figure.add_hrect(
+                y0=fresh_threshold,
+                y1=stale_threshold,
+                fillcolor="#ffbf69",
+                opacity=0.09,
+                line_width=0,
+                layer="below",
+            )
+            freshness_figure.add_hrect(
+                y0=stale_threshold,
+                y1=freshness_axis_maximum,
+                fillcolor="#ff6b6b",
+                opacity=0.08,
+                line_width=0,
+                layer="below",
+            )
+            freshness_figure.add_hline(
+                y=fresh_threshold,
+                line_dash="dash",
+                line_color="#ffbf69",
+                annotation_text=f"koniec fresh ({fresh_threshold:g} h)",
+            )
+            freshness_figure.add_hline(
+                y=stale_threshold,
+                line_dash="dash",
+                line_color="#ff6b6b",
+                annotation_text=f"stale / blokada ({stale_threshold:g} h)",
+            )
             freshness_figure.update_layout(
-                title="Wiek najnowszych danych w kolejnych aktualizacjach",
+                title=(
+                    "Wiek pomiaru i ostatniego pobrania GIOŚ / IMGW — "
+                    f"aktualna polityka {fresh_threshold:g}/{stale_threshold:g} h"
+                ),
                 xaxis_title="Kontrola / aktualizacja",
                 yaxis_title="Wiek danych [h]",
+                yaxis=dict(range=[0, freshness_axis_maximum]),
                 legend=dict(orientation="h"),
                 height=420,
             )
@@ -4309,12 +5447,16 @@ with status_tab:
                 config=PLOTLY_CHART_CONFIG,
             )
             st.dataframe(
-                freshness_checks[
+                plotted_freshness[
                     [
+                        "point_kind",
                         "generated_at",
                         "source",
                         "status",
-                        "maximum_age_hours",
+                        "maximum_measurement_age_hours",
+                        "maximum_collection_age_hours",
+                        "measurement_status",
+                        "collection_status",
                         "last_collected_at",
                         "measurement_end",
                         "parameter_count",
@@ -4406,10 +5548,15 @@ with cost_tab:
     except Exception as exc:
         st.warning(f"Nie można pobrać agregatu kosztów i wykorzystania: {exc}")
         cost_quality = {}
+    try:
+        cost_operations = load_system_status()
+    except Exception:
+        cost_operations = {}
     _render_cost_center(
         cost_quality,
         _normalise_query_result(st.session_state.get("query_result")) or {},
         nlp_provider=str(health.get("nlp_provider") or "unknown"),
+        operations=cost_operations,
     )
 
 

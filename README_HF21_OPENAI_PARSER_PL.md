@@ -41,9 +41,9 @@ pracę bez zmiany pliku.
 
 ```dotenv
 SMOG_AI_LLM_PROVIDER=openai
-SMOG_AI_LLM_MODEL=gpt-4.1-mini
-SMOG_AI_LLM_API_KEY_ENV=OPENAI_API_KEY
-OPENAI_API_KEY=TU_WSTAW_KLUCZ
+SMOG_AI_LLM_MODEL=gpt-5.4-mini
+SMOG_AI_LLM_API_KEY_ENV=LLM_API_KEY
+LLM_API_KEY=TU_WSTAW_KLUCZ
 
 # Podczas testu błąd OpenAI ma być widoczny, a nie ukryty przez fallback.
 SMOG_AI_LLM_ALLOW_RULE_FALLBACK=false

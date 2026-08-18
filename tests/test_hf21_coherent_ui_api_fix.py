@@ -182,6 +182,9 @@ def test_dashboard_has_lazy_timeline_and_polish_glyph_contract() -> None:
     assert "max_value=100.0" in source
     assert '"query/preview"' in source
     assert 'key="hf21_confirmation_parameters"' in source
+    assert 'st.session_state["question"] = DEFAULT_QUESTION' in source
+    assert 'key="question"' in source
+    assert 'value=st.session_state.get("question", DEFAULT_QUESTION)' not in source
     assert "dark-matter-gl-style/style.json" in source
     assert "dark-matter-nolabels-gl-style" not in source
     assert "QUERY_PARAMETER_OPTIONS = _manifest_parameter_options(manifest)" in source

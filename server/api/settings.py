@@ -182,7 +182,7 @@ class ServerSettings:
             nlp_max_retries=int(os.getenv("SMOG_AI_LLM_MAX_RETRIES", "2")),
             nlp_temperature=float(os.getenv("SMOG_AI_LLM_TEMPERATURE", "0")),
             nlp_allow_rule_based_fallback=_env_bool(
-                "SMOG_AI_LLM_ALLOW_RULE_FALLBACK", True
+                "SMOG_AI_LLM_ALLOW_RULE_FALLBACK", False
             ),
             geocoder_provider=os.getenv("SMOG_AI_GEOCODER_PROVIDER", "offline").strip().lower(),
             geocoder_endpoint=_env_optional("SMOG_AI_GEOCODER_ENDPOINT"),

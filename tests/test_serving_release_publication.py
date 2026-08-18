@@ -46,6 +46,13 @@ def test_promotes_assets_before_atomic_pointer() -> None:
 
     assert result.errors == 0
     assert result.details["pointer_published_last"] is True
+    assert result.details["request_count"] >= result.inserted
+    assert result.details["elapsed_seconds"] >= 0
+    assert result.details["bytes_by_category"]["surfaces"]["objects_uploaded"] == 1
+    assert result.details["bytes_by_category"]["static"]["objects_uploaded"] == 2
+    assert result.details["bytes_by_category"]["stats"]["objects_uploaded"] == 1
+    assert result.details["bytes_by_category"]["manifest"]["objects_uploaded"] == 1
+    assert result.details["bytes_by_category"]["pointer"]["objects_uploaded"] == 1
     assert destination.get_json(destination.layout.latest_spatial_pointer)["release_id"] == release_id
     assert destination.store.get_bytes(surface_key) == b"compressed-surface"
 

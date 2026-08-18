@@ -835,7 +835,10 @@ def stages_for(
             Stage(
                 "Raport świeżości danych",
                 "data-freshness-report",
-                ("--threshold-hours", "8"),
+                (
+                    "--threshold-hours", "14",
+                    "--stale-threshold-hours", "22",
+                ),
                 weight=1,
                 timeout_minutes=30,
             ),

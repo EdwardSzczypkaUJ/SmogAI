@@ -881,14 +881,14 @@ class PublicationConfig(BaseModel):
 class NLPConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    provider: Literal["rule_based", "openai_compatible"] = "rule_based"
+    provider: Literal["rule_based", "openai", "openai_compatible"] = "rule_based"
     model: str = "gpt-5.4-mini"
     base_url: str = "https://api.openai.com/v1"
     api_key_env: str = "LLM_API_KEY"
     timeout_seconds: float = 30.0
     max_retries: int = 2
     temperature: float = 0.0
-    allow_rule_based_fallback: bool = True
+    allow_rule_based_fallback: bool = False
     default_country: str = "Polska"
     default_timezone: str = "Europe/Warsaw"
 
@@ -954,12 +954,22 @@ class OperationsConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     profile: str = "test"
-    freshness_hours: float = Field(default=8.0, ge=1.0, le=168.0)
+    freshness_hours: float = Field(default=14.0, ge=1.0, le=168.0)
+    freshness_stale_hours: float = Field(default=22.0, ge=1.0, le=336.0)
     serving_refresh_hours: int = Field(default=8, ge=1, le=168)
     regular_training_hours: int = Field(default=12, ge=1, le=720)
     heavy_training_hours: int = Field(default=28, ge=1, le=720)
     deferred_retry_minutes: int = Field(default=30, ge=5, le=720)
     serving_release_retention: int = Field(default=3, ge=1, le=100)
+
+    @model_validator(mode="after")
+    def validate_freshness_thresholds(self) -> OperationsConfig:
+        if self.freshness_stale_hours <= self.freshness_hours:
+            raise ValueError(
+                "operations.freshness_stale_hours must be greater than "
+                "operations.freshness_hours"
+            )
+        return self
 
 
 class HealthConfig(BaseModel):
@@ -1359,6 +1369,10 @@ def _apply_environment_overrides(payload: dict[str, Any]) -> None:
         ("SMOG_AI_STALE_AIR_HOURS", ("quality", "stale_air_hours")),
         ("SMOG_AI_STALE_WEATHER_HOURS", ("quality", "stale_weather_hours")),
         ("SMOG_AI_FRESHNESS_HOURS", ("operations", "freshness_hours")),
+        (
+            "SMOG_AI_FRESHNESS_STALE_HOURS",
+            ("operations", "freshness_stale_hours"),
+        ),
         ("SMOG_AI_SERVING_REFRESH_HOURS", ("operations", "serving_refresh_hours")),
         ("SMOG_AI_REGULAR_TRAINING_HOURS", ("operations", "regular_training_hours")),
         ("SMOG_AI_HEAVY_TRAINING_HOURS", ("operations", "heavy_training_hours")),

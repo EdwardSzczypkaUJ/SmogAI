@@ -5,7 +5,10 @@ from datetime import UTC, datetime, timedelta
 
 from smog_ai.database.engine import session_scope
 from smog_ai.database.models import CollectionRun, ModelVersion, ProcessLock, TrainingRun
-from smog_ai.operations import build_public_operations_status
+from smog_ai.operations import (
+    _digitalocean_transfer_history,
+    build_public_operations_status,
+)
 
 
 def test_public_operations_status_is_sanitised_and_uses_test_cadence(
@@ -133,6 +136,10 @@ def test_public_operations_status_is_sanitised_and_uses_test_cadence(
 
     encoded = json.dumps(payload)
     assert payload["data"]["status_at_publication"] == "fresh"
+    assert payload["data"]["measurement_age_hours_at_publication"] == 2.0
+    assert payload["data"]["collection_age_hours_at_publication"] == 3.0
+    assert payload["data"]["fresh_threshold_hours"] == 14.0
+    assert payload["data"]["stale_threshold_hours"] == 22.0
     assert payload["schedule"] == {
         "serving_refresh_hours": 8,
         "regular_training_hours": 12,
@@ -155,3 +162,41 @@ def test_public_operations_status_is_sanitised_and_uses_test_cadence(
     assert "private-token" not in encoded
     assert "12345" not in encoded
     assert "secret" not in encoded
+
+
+def test_digitalocean_transfer_history_reads_utf16_legacy_reports(app_config) -> None:
+    report_dir = (
+        app_config.paths.logs_dir.parent
+        / "reports"
+        / "digitalocean"
+        / "20260817-110957"
+    )
+    report_dir.mkdir(parents=True, exist_ok=True)
+    (report_dir / "03-publication.json").write_text(
+        json.dumps(
+            {
+                "inserted": 482,
+                "skipped": 2,
+                "details": {
+                    "release_id": "safe-release",
+                    "manifest_key": "private-layout-detail",
+                    "objects_copied": 481,
+                    "objects_reused": 2,
+                    "bytes_uploaded": 90_620_682,
+                    "destination_backend": "s3",
+                    "pointer_published_last": True,
+                },
+            }
+        ),
+        encoding="utf-16",
+    )
+
+    payload = _digitalocean_transfer_history(app_config)
+
+    assert payload["status"] == "measured"
+    assert payload["latest"]["objects_uploaded"] == 482
+    assert payload["latest"]["objects_reused"] == 2
+    assert payload["latest"]["bytes_uploaded"] == 90_620_682
+    assert payload["daily"][0]["period"] == "20260817"
+    assert "manifest_key" not in str(payload)
+    assert "private-layout-detail" not in str(payload)

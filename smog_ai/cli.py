@@ -2180,7 +2180,13 @@ def command_data_freshness_report(
         None,
         "--threshold-hours",
         min=0.1,
-        help="Opcjonalny wspólny próg fresh dla GIOS i IMGW (godziny).",
+        help="Opcjonalny koniec przedziału fresh (domyślnie 14 h).",
+    ),
+    stale_threshold_hours: float | None = typer.Option(
+        None,
+        "--stale-threshold-hours",
+        min=0.1,
+        help="Opcjonalny początek stale/block (domyślnie ponad 22 h).",
     ),
     config: Path | None = COMMON_CONFIG,
     env_file: Path | None = COMMON_ENV,
@@ -2189,8 +2195,13 @@ def command_data_freshness_report(
 
     cfg, engine = _runtime(config, env_file, "data-freshness-report")
     if threshold_hours is not None:
-        cfg.quality.stale_air_hours = threshold_hours
-        cfg.quality.stale_weather_hours = threshold_hours
+        cfg.operations.freshness_hours = threshold_hours
+    if stale_threshold_hours is not None:
+        cfg.operations.freshness_stale_hours = stale_threshold_hours
+    if cfg.operations.freshness_stale_hours <= cfg.operations.freshness_hours:
+        raise typer.BadParameter(
+            "--stale-threshold-hours must be greater than --threshold-hours"
+        )
     destination = output_dir or (cfg.paths.logs_dir.parent / "reports" / "freshness")
     with session_scope(engine) as session:
         report = build_freshness_report(session, cfg)

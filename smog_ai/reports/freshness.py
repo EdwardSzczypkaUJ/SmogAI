@@ -31,14 +31,19 @@ def _age_hours(value: datetime | None, now: datetime) -> float | None:
     return max(0.0, (now - as_utc(value)).total_seconds() / 3600.0)
 
 
-def _status(age: float | None, threshold: float) -> str:
+def _status(age: float | None, fresh_hours: float, stale_hours: float) -> str:
     if age is None:
         return "missing"
-    if age <= threshold:
+    if age <= fresh_hours:
         return "fresh"
-    if age <= threshold * 2:
+    if age <= stale_hours:
         return "warning"
     return "stale"
+
+
+def _worst_status(*statuses: str) -> str:
+    rank = {"fresh": 0, "warning": 1, "stale": 2, "missing": 3}
+    return max(statuses, key=lambda value: rank.get(value, 4))
 
 
 def build_freshness_report(
@@ -54,8 +59,8 @@ def build_freshness_report(
     """
 
     generated = (now or utc_now()).astimezone(UTC)
-    air_threshold = float(config.quality.stale_air_hours)
-    weather_threshold = float(config.quality.stale_weather_hours)
+    fresh_hours = float(config.operations.freshness_hours)
+    stale_hours = float(config.operations.freshness_stale_hours)
 
     air_rows = session.execute(
         select(
@@ -70,16 +75,34 @@ def build_freshness_report(
     ).all()
     air: list[dict[str, Any]] = []
     for parameter, start, end, rows, stations, valid_rows, collected_at in air_rows:
-        age = _age_hours(end, generated)
+        measurement_age = _age_hours(end, generated)
+        collection_age = _age_hours(collected_at, generated)
+        measurement_status = _status(measurement_age, fresh_hours, stale_hours)
+        collection_status = _status(collection_age, fresh_hours, stale_hours)
         air.append(
             {
                 "source": "GIOS",
                 "parameter": str(parameter),
                 "measurement_start": _iso(start),
                 "measurement_end": _iso(end),
-                "age_hours": round(age, 3) if age is not None else None,
-                "threshold_hours": air_threshold,
-                "status": _status(age, air_threshold),
+                "age_hours": (
+                    round(measurement_age, 3)
+                    if measurement_age is not None else None
+                ),
+                "measurement_age_hours": (
+                    round(measurement_age, 3)
+                    if measurement_age is not None else None
+                ),
+                "collection_age_hours": (
+                    round(collection_age, 3)
+                    if collection_age is not None else None
+                ),
+                "fresh_threshold_hours": fresh_hours,
+                "stale_threshold_hours": stale_hours,
+                "threshold_hours": fresh_hours,
+                "measurement_status": measurement_status,
+                "collection_status": collection_status,
+                "status": _worst_status(measurement_status, collection_status),
                 "rows": int(rows or 0),
                 "valid_rows": int(valid_rows or 0),
                 "stations": int(stations or 0),
@@ -106,16 +129,34 @@ def build_freshness_report(
                 func.max(WeatherMeasurement.collected_at),
             ).where(column.is_not(None))
         ).one()
-        age = _age_hours(end, generated)
+        measurement_age = _age_hours(end, generated)
+        collection_age = _age_hours(collected_at, generated)
+        measurement_status = _status(measurement_age, fresh_hours, stale_hours)
+        collection_status = _status(collection_age, fresh_hours, stale_hours)
         weather.append(
             {
                 "source": "IMGW",
                 "parameter": parameter,
                 "measurement_start": _iso(start),
                 "measurement_end": _iso(end),
-                "age_hours": round(age, 3) if age is not None else None,
-                "threshold_hours": weather_threshold,
-                "status": _status(age, weather_threshold),
+                "age_hours": (
+                    round(measurement_age, 3)
+                    if measurement_age is not None else None
+                ),
+                "measurement_age_hours": (
+                    round(measurement_age, 3)
+                    if measurement_age is not None else None
+                ),
+                "collection_age_hours": (
+                    round(collection_age, 3)
+                    if collection_age is not None else None
+                ),
+                "fresh_threshold_hours": fresh_hours,
+                "stale_threshold_hours": stale_hours,
+                "threshold_hours": fresh_hours,
+                "measurement_status": measurement_status,
+                "collection_status": collection_status,
+                "status": _worst_status(measurement_status, collection_status),
                 "rows": int(rows or 0),
                 "valid_rows": int(rows or 0),
                 "stations": int(stations or 0),
@@ -137,10 +178,13 @@ def build_freshness_report(
         .limit(10)
     ).all()
     return {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "generated_at": generated.isoformat(),
         "overall_status": overall,
-        "thresholds_hours": {"GIOS": air_threshold, "IMGW": weather_threshold},
+        "thresholds_hours": {
+            "fresh": fresh_hours,
+            "stale": stale_hours,
+        },
         "station_catalog": {
             "GIOS": int(session.scalar(select(func.count()).select_from(AirStation)) or 0),
             "IMGW": int(session.scalar(select(func.count()).select_from(WeatherStation)) or 0),
@@ -177,7 +221,8 @@ def _render_html(report: dict[str, Any]) -> str:
             f"<td>{html.escape(str(item['source']))}</td>"
             f"<td>{html.escape(str(item['parameter']))}</td>"
             f"<td>{html.escape(str(item['measurement_end'] or '—'))}</td>"
-            f"<td>{html.escape(str(item['age_hours'] if item['age_hours'] is not None else '—'))}</td>"
+            f"<td>{html.escape(str(item['measurement_age_hours'] if item['measurement_age_hours'] is not None else '—'))}</td>"
+            f"<td>{html.escape(str(item['collection_age_hours'] if item['collection_age_hours'] is not None else '—'))}</td>"
             f"<td>{int(item['stations'])}</td><td>{int(item['rows'])}</td>"
             f"<td><span class='status' style='background:{colours.get(status, '#667085')}'>{html.escape(status)}</span></td>"
             "</tr>"
@@ -193,7 +238,8 @@ th{background:#152638}.status{color:white;padding:4px 9px;border-radius:999px;fo
         f"Wygenerowano: {html.escape(str(report['generated_at']))}<br>"
         f"Status całości: <strong>{html.escape(str(report['overall_status']))}</strong></div>"
         "<table><thead><tr><th>Źródło</th><th>Parametr</th><th>Ostatni pomiar</th>"
-        "<th>Wiek [h]</th><th>Stacje</th><th>Rekordy</th><th>Status</th></tr></thead>"
+        "<th>Wiek pomiaru [h]</th><th>Wiek pobrania [h]</th><th>Stacje</th>"
+        "<th>Rekordy</th><th>Status</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table></body></html>"
     )
 

@@ -82,9 +82,9 @@ try {
     }
     if ($Code -eq 0 -and $PublishDigitalOcean) {
         $Publisher = Join-Path $ProjectRoot 'scripts\Publish-SmogAI-ServingToDigitalOcean.ps1'
-        Write-ScheduleLog 'PUBLICATION_START serving=v2 freshness_hours=8 retention=3'
+        Write-ScheduleLog 'PUBLICATION_START serving=v2 fresh_hours=14 stale_hours=22 retention=3'
         & $Publisher -ProjectRoot $ProjectRoot -RuntimeRoot $RuntimeRoot `
-            -FreshnessThresholdHours 8 -SkipSeal `
+            -FreshnessThresholdHours 14 -FreshnessStaleThresholdHours 22 -SkipSeal `
             -Approval 'PUBLISH VERIFIED SERVING V2' `
             -RetainServingReleases 3 `
             -RetentionApproval 'PRUNE OLD SERVING RELEASES' *>> $WrapperLog

@@ -38,12 +38,39 @@ def _last_success_by_profile(runs: list[TrainingRun], profile: str) -> datetime 
     return max(values) if values else None
 
 
-def _freshness(age_hours: float, threshold_hours: float) -> str:
-    if age_hours <= threshold_hours:
+def _freshness(
+    age_hours: float | None,
+    fresh_hours: float,
+    stale_hours: float | None = None,
+) -> str:
+    if age_hours is None:
+        return "missing"
+    stale_limit = stale_hours if stale_hours is not None else fresh_hours * 2
+    if age_hours <= fresh_hours:
         return "fresh"
-    if age_hours <= threshold_hours * 2:
+    if age_hours <= stale_limit:
         return "warning"
     return "stale"
+
+
+def _worst_freshness(*statuses: str) -> str:
+    rank = {"fresh": 0, "warning": 1, "stale": 2, "missing": 3}
+    return max(statuses, key=lambda value: rank.get(value, 4))
+
+
+def _reported_age_hours(generated_at: Any, timestamp: Any) -> float | None:
+    if not generated_at or not timestamp:
+        return None
+    try:
+        generated = datetime.fromisoformat(str(generated_at).replace("Z", "+00:00"))
+        observed = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if generated.tzinfo is None:
+        generated = generated.replace(tzinfo=as_utc(utc_now()).tzinfo)
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=as_utc(utc_now()).tzinfo)
+    return max(0.0, (generated - observed).total_seconds() / 3600.0)
 
 
 def _age_hours(newer: datetime, older: datetime | None) -> float | None:
@@ -58,6 +85,108 @@ def _safe_number(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return number
+
+
+def _read_json_report(path: Any) -> dict[str, Any] | None:
+    for encoding in ("utf-8-sig", "utf-16"):
+        try:
+            return dict(json.loads(path.read_text(encoding=encoding)))
+        except (OSError, UnicodeError, ValueError, TypeError):
+            continue
+    return None
+
+
+def _digitalocean_transfer_history(config: AppConfig) -> dict[str, Any]:
+    """Aggregate safe transfer counters from completed publication reports."""
+
+    root = config.paths.logs_dir.parent / "reports" / "digitalocean"
+    if not root.exists():
+        return {"status": "unavailable", "source": "local_publication_reports"}
+    rows: list[dict[str, Any]] = []
+    for path in sorted(root.glob("*/03-publication.json")):
+        payload = _read_json_report(path)
+        if payload is None:
+            continue
+        details = dict(payload.get("details") or {})
+        uploaded = int(details.get("objects_copied") or 0) + 1
+        reused = int(details.get("objects_reused") or 0)
+        bytes_uploaded = int(details.get("bytes_uploaded") or 0)
+        total = uploaded + reused
+        rows.append(
+            {
+                "observed_at": path.parent.name,
+                "release_id": details.get("release_id"),
+                "destination_backend": details.get("destination_backend"),
+                "objects_uploaded": uploaded,
+                "objects_reused": reused,
+                "bytes_uploaded": bytes_uploaded,
+                "request_count": (
+                    int(details["request_count"])
+                    if details.get("request_count") is not None
+                    else None
+                ),
+                "request_count_minimum": uploaded,
+                "reuse_ratio": reused / total if total else None,
+                "elapsed_seconds": _safe_number(details.get("elapsed_seconds")),
+                "throughput_bytes_per_second": _safe_number(
+                    details.get("throughput_bytes_per_second")
+                ),
+                "bytes_by_category": dict(details.get("bytes_by_category") or {}),
+                "pointer_published_last": bool(
+                    details.get("pointer_published_last")
+                ),
+            }
+        )
+    if not rows:
+        return {"status": "unavailable", "source": "local_publication_reports"}
+
+    def aggregate(prefix_length: int) -> list[dict[str, Any]]:
+        grouped: dict[str, dict[str, int]] = {}
+        for row in rows:
+            compact = str(row["observed_at"]).replace("-", "")
+            period = compact[:prefix_length]
+            bucket = grouped.setdefault(
+                period,
+                {
+                    "publication_count": 0,
+                    "objects_uploaded": 0,
+                    "objects_reused": 0,
+                    "bytes_uploaded": 0,
+                    "request_count_minimum": 0,
+                    "request_count": 0,
+                },
+            )
+            bucket["publication_count"] += 1
+            for key in (
+                "objects_uploaded",
+                "objects_reused",
+                "bytes_uploaded",
+                "request_count_minimum",
+            ):
+                bucket[key] += int(row[key])
+            bucket["request_count"] += int(
+                row.get("request_count")
+                if row.get("request_count") is not None
+                else row["request_count_minimum"]
+            )
+        return [{"period": period, **values} for period, values in sorted(grouped.items())]
+
+    limitations = []
+    if any(row.get("request_count") is None for row in rows):
+        limitations.append("request_count_is_minimum_for_legacy_reports")
+    if any(not row.get("bytes_by_category") for row in rows):
+        limitations.append("category_breakdown_not_available_in_legacy_reports")
+    if any(row.get("elapsed_seconds") is None for row in rows):
+        limitations.append("duration_not_available_in_legacy_reports")
+    return {
+        "status": "measured",
+        "source": "local_publication_reports",
+        "latest": rows[-1],
+        "daily": aggregate(8),
+        "monthly": aggregate(6),
+        "publication_count": len(rows),
+        "limitations": limitations,
+    }
 
 
 def _freshness_check_history(config: AppConfig, *, limit: int = 30) -> list[dict[str, Any]]:
@@ -76,7 +205,8 @@ def _freshness_check_history(config: AppConfig, *, limit: int = 30) -> list[dict
         reverse=True,
     )[:limit]
     history: list[dict[str, Any]] = []
-    status_rank = {"fresh": 0, "warning": 1, "stale": 2, "missing": 3}
+    fresh_hours = float(config.operations.freshness_hours)
+    stale_hours = float(config.operations.freshness_stale_hours)
     for path in paths:
         try:
             payload = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -91,20 +221,54 @@ def _freshness_check_history(config: AppConfig, *, limit: int = 30) -> list[dict
             ]
             if not rows:
                 continue
-            statuses = [str(row.get("status") or "missing") for row in rows]
-            status = max(statuses, key=lambda value: status_rank.get(value, 4))
-            ages = [
+            measurement_ages = [
                 number
-                for number in (_safe_number(row.get("age_hours")) for row in rows)
+                for number in (
+                    _safe_number(
+                        row.get("measurement_age_hours")
+                        if row.get("measurement_age_hours") is not None
+                        else row.get("age_hours")
+                    )
+                    for row in rows
+                )
                 if number is not None
             ]
+            collection_ages = [
+                number
+                for number in (
+                    _safe_number(row.get("collection_age_hours"))
+                    if row.get("collection_age_hours") is not None
+                    else _reported_age_hours(
+                        generated_at, row.get("last_collected_at")
+                    )
+                    for row in rows
+                )
+                if number is not None
+            ]
+            maximum_measurement_age = (
+                max(measurement_ages) if measurement_ages else None
+            )
+            maximum_collection_age = max(collection_ages) if collection_ages else None
+            measurement_status = _freshness(
+                maximum_measurement_age, fresh_hours, stale_hours
+            )
+            collection_status = _freshness(
+                maximum_collection_age, fresh_hours, stale_hours
+            )
+            status = _worst_freshness(measurement_status, collection_status)
             history.append(
                 {
                     "generated_at": generated_at,
                     "source": source,
                     "status": status,
-                    "maximum_age_hours": max(ages) if ages else None,
-                    "threshold_hours": _safe_number(rows[0].get("threshold_hours")),
+                    "maximum_age_hours": maximum_measurement_age,
+                    "maximum_measurement_age_hours": maximum_measurement_age,
+                    "maximum_collection_age_hours": maximum_collection_age,
+                    "measurement_status": measurement_status,
+                    "collection_status": collection_status,
+                    "fresh_threshold_hours": fresh_hours,
+                    "stale_threshold_hours": stale_hours,
+                    "threshold_hours": fresh_hours,
                     "parameter_count": len(rows),
                     "valid_rows": sum(int(row.get("valid_rows") or 0) for row in rows),
                     "last_collected_at": max(
@@ -238,10 +402,16 @@ def build_public_operations_status(
         ).all()
     )
     public_collection_runs = []
+    latest_collection_at: datetime | None = None
     for run in collection_runs:
         run_type = str(run.run_type or "")
         if not any(token in run_type.casefold() for token in ("collect", "pipeline", "refresh")):
             continue
+        collected_at = run.finished_at or run.started_at
+        if collected_at is not None:
+            collected = as_utc(collected_at)
+            if latest_collection_at is None or collected > latest_collection_at:
+                latest_collection_at = collected
         public_collection_runs.append(
             {
                 "run_type": run_type,
@@ -317,16 +487,37 @@ def build_public_operations_status(
             }
         )
 
+    collection_age_hours = _age_hours(generated, latest_collection_at)
+    measurement_status = _freshness(
+        age_hours,
+        float(operations.freshness_hours),
+        float(operations.freshness_stale_hours),
+    )
+    collection_status = _freshness(
+        collection_age_hours,
+        float(operations.freshness_hours),
+        float(operations.freshness_stale_hours),
+    )
     return {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "profile": operations.profile,
         "generated_at": _iso(generated),
         "data": {
             "source_origin_time": _iso(origin),
+            "last_collection_at": _iso(latest_collection_at),
             "age_hours_at_publication": round(age_hours, 3),
+            "measurement_age_hours_at_publication": round(age_hours, 3),
+            "collection_age_hours_at_publication": (
+                round(collection_age_hours, 3)
+                if collection_age_hours is not None else None
+            ),
             "freshness_threshold_hours": float(operations.freshness_hours),
-            "status_at_publication": _freshness(
-                age_hours, float(operations.freshness_hours)
+            "fresh_threshold_hours": float(operations.freshness_hours),
+            "stale_threshold_hours": float(operations.freshness_stale_hours),
+            "measurement_status_at_publication": measurement_status,
+            "collection_status_at_publication": collection_status,
+            "status_at_publication": _worst_freshness(
+                measurement_status, collection_status
             ),
         },
         "schedule": {
@@ -362,6 +553,9 @@ def build_public_operations_status(
         "serving": {
             "surface_count": int(surface_count),
             "horizon_hours": int(serving_horizon),
+        },
+        "finops": {
+            "digitalocean": _digitalocean_transfer_history(config),
         },
         "models": model_cards,
         "privacy": {

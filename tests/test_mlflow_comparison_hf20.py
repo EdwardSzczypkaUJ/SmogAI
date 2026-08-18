@@ -171,6 +171,79 @@ def test_public_model_comparison_removes_training_and_mlflow_identifiers() -> No
     assert "dataset" not in encoded.replace("dataset_identifiers_included", "")
 
 
+def test_public_model_comparison_exposes_compact_horizon_winners() -> None:
+    payload = build_public_model_comparison_payload(
+        {
+            "generated_at_utc": "2026-08-17T00:00:00+00:00",
+            "models": [],
+            "candidate_runs": [
+                {
+                    "run_id": "private-ridge-run",
+                    "target": "PM10",
+                    "provider": "ridge",
+                    "profile": "full",
+                    "selected": True,
+                    "status": "FINISHED",
+                    "start_time": 20,
+                    "params": {"dataset_id": "private-dataset"},
+                    "metrics": {
+                        "by_horizon.1.count": 100,
+                        "by_horizon.1.mae": 1.2,
+                        "by_horizon.1.rmse": 1.8,
+                        "by_horizon.1.persistence_mae": 2.0,
+                        "by_horizon.1.mae_improvement_vs_persistence": 0.4,
+                        "by_horizon.1.secret_metric": 999,
+                    },
+                },
+                {
+                    "run_id": "private-persistence-run",
+                    "target": "PM10",
+                    "provider": "persistence",
+                    "profile": "full",
+                    "selected": False,
+                    "status": "FINISHED",
+                    "start_time": 21,
+                    "metrics": {
+                        "by_horizon.1.count": 100,
+                        "by_horizon.1.mae": 2.0,
+                        "by_horizon.1.rmse": 2.5,
+                        "by_horizon.1.persistence_mae": 2.0,
+                        "by_horizon.1.mae_improvement_vs_persistence": 0.0,
+                    },
+                },
+                {
+                    "run_id": "unfinished-private-run",
+                    "target": "PM10",
+                    "provider": "mlp",
+                    "status": "RUNNING",
+                    "start_time": 99,
+                    "metrics": {"by_horizon.1.mae": 0.1},
+                },
+            ],
+        }
+    )
+
+    assert payload["schema_version"] == "1.1-public"
+    assert len(payload["horizon_quality"]) == 2
+    assert payload["horizon_winners"] == [
+        {
+            "target": "PM10",
+            "horizon_hours": 1,
+            "provider": "ridge",
+            "mae": 1.2,
+            "rmse": 1.8,
+            "persistence_mae": 2.0,
+            "improvement_vs_persistence": 0.4,
+            "candidate_count": 2,
+        }
+    ]
+    assert payload["summary"]["horizon_count"] == 1
+    encoded = str(payload)
+    assert "private-ridge-run" not in encoded
+    assert "private-dataset" not in encoded
+    assert "secret_metric" not in encoded
+
+
 def test_model_comparison_recovers_nested_training_snapshot_provenance(
     engine, app_config
 ) -> None:  # type: ignore[no-untyped-def]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,19 @@ from smog_ai.storage.local import LocalObjectStore
 
 RETENTION_CONFIRMATION = "PRUNE OLD SERVING RELEASES"
 RELEASE_PREFIX = "serving/releases/release="
+
+
+def _transfer_category(key: str, manifest_key: str, pointer_key: str) -> str:
+    if key == pointer_key:
+        return "pointer"
+    if key == manifest_key:
+        return "manifest"
+    lowered = key.lower()
+    if any(token in lowered for token in ("boundary", "places")):
+        return "static"
+    if lowered.endswith(".gz"):
+        return "surfaces"
+    return "stats"
 
 
 def _sha256(data: bytes) -> str:
@@ -160,19 +174,29 @@ def promote_serving_release(
     if manifest.get("release_id") != pointer.get("release_id"):
         raise RuntimeError("Serving v2 pointer and manifest refer to different releases.")
 
+    started = time.perf_counter()
     destination.ping()
     copied_bytes = 0
     copied = 0
     skipped = 0
+    request_count = 1
+    categories = {
+        name: {"objects_uploaded": 0, "objects_reused": 0, "bytes_uploaded": 0}
+        for name in ("surfaces", "stats", "static", "manifest", "pointer")
+    }
     for key in _release_keys(pointer, manifest):
         body = source.store.get_bytes(key)
         existing = destination.store.head(key)
+        request_count += 1
         checksum = _sha256(body)
         existing_checksum = None
         if existing is not None:
             existing_checksum = existing.metadata.get("sha256") or existing.etag
         if existing_checksum and existing_checksum.strip('"') == checksum:
             skipped += 1
+            categories[_transfer_category(key, manifest_key, pointer_key)][
+                "objects_reused"
+            ] += 1
             continue
         destination.store.put_bytes(
             key,
@@ -184,11 +208,16 @@ def promote_serving_release(
             metadata={"sha256": checksum, "serving-contract": "v2"},
             immutable=True,
         )
+        request_count += 1
         remote = destination.store.get_bytes(key)
+        request_count += 1
         if _sha256(remote) != checksum:
             raise RuntimeError(f"Remote checksum verification failed for {key}.")
         copied += 1
         copied_bytes += len(body)
+        category = categories[_transfer_category(key, manifest_key, pointer_key)]
+        category["objects_uploaded"] += 1
+        category["bytes_uploaded"] += len(body)
 
     # Atomic publication boundary: readers cannot observe the release until all
     # immutable objects and the manifest have been uploaded and verified.
@@ -200,10 +229,18 @@ def promote_serving_release(
         metadata={"sha256": _sha256(pointer_bytes), "serving-contract": "v2"},
         immutable=False,
     )
+    request_count += 1
     published = destination.get_json(pointer_key)
+    request_count += 1
     if published.get("release_id") != pointer.get("release_id"):
         raise RuntimeError("Remote Serving v2 pointer verification failed.")
 
+    pointer_category = categories["pointer"]
+    pointer_category["objects_uploaded"] = 1
+    pointer_category["bytes_uploaded"] = len(pointer_bytes)
+    elapsed_seconds = max(0.0, time.perf_counter() - started)
+    total_bytes = copied_bytes + len(pointer_bytes)
+    total_objects = copied + skipped + 1
     return StageStats(
         downloaded=0,
         inserted=copied + 1,
@@ -213,7 +250,16 @@ def promote_serving_release(
             "manifest_key": manifest_key,
             "objects_copied": copied,
             "objects_reused": skipped,
-            "bytes_uploaded": copied_bytes + len(pointer_bytes),
+            "bytes_uploaded": total_bytes,
+            "bytes_by_category": categories,
+            "elapsed_seconds": round(elapsed_seconds, 3),
+            "throughput_bytes_per_second": (
+                round(total_bytes / elapsed_seconds, 3)
+                if elapsed_seconds > 0 else None
+            ),
+            "request_count": request_count,
+            "reuse_ratio": skipped / total_objects if total_objects else None,
+            "cache_ratio": skipped / total_objects if total_objects else None,
             "destination_backend": destination.store.backend_name,
             "pointer_published_last": True,
         },

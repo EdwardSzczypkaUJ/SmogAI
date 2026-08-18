@@ -4,7 +4,8 @@ param(
     [string]$RuntimeRoot = 'C:\ProgramData\SmogAI',
     [string]$SourceRoot = '',
     [string]$Approval = '',
-    [double]$FreshnessThresholdHours = 8.0,
+    [double]$FreshnessThresholdHours = 14.0,
+    [double]$FreshnessStaleThresholdHours = 22.0,
     [switch]$AllowStaleData,
     [switch]$SkipSeal,
     [int]$RetainServingReleases = 0,
@@ -47,18 +48,19 @@ try {
     & $Python -m smog_ai data-freshness-report `
         --output-dir (Join-Path $ReportRoot 'freshness') `
         --threshold-hours $FreshnessThresholdHours `
+        --stale-threshold-hours $FreshnessStaleThresholdHours `
         --config $Config --env-file $EnvFile |
         Tee-Object -FilePath (Join-Path $ReportRoot '01-data-freshness.json')
     if ($LASTEXITCODE -notin @(0, 4)) { throw "Freshness report failed: $LASTEXITCODE" }
 
     $FreshnessPath = Join-Path $ReportRoot 'freshness\data-freshness-latest.json'
     $Freshness = Get-Content -LiteralPath $FreshnessPath -Raw | ConvertFrom-Json
-    if ($Freshness.overall_status -ne 'fresh') {
+    if ($Freshness.overall_status -eq 'warning') {
         Write-Warning ("Data freshness status: {0}. Review: {1}" -f `
             $Freshness.overall_status, $FreshnessPath)
-        if (($Approval -eq 'PUBLISH VERIFIED SERVING V2') -and (-not $AllowStaleData)) {
-            throw "Publication blocked: measurement data is not fresh. Refresh GIOS/IMGW data or explicitly use -AllowStaleData."
-        }
+    }
+    if ($Freshness.overall_status -in @('stale', 'missing')) {
+        throw "Publication blocked: measurement or collection freshness is stale/missing. The previous valid public pointer remains unchanged."
     }
 
     Write-Host 'E2/4 DigitalOcean Spaces preflight' -ForegroundColor Cyan
