@@ -27,6 +27,9 @@ def test_dashboard_degrades_cleanly_without_optional_remote_services() -> None:
     assert "Kiedy nowy model był lepszy — a kiedy trening nic nie zmienił" in source
     assert "Zmiana względem poprzedniego aktywnego modelu" in source
     assert "Historia pobrań i świeżości GIOŚ / IMGW" in source
+    assert "Historia opublikowanych powierzchni Serving v2" in source
+    assert "Kolejne publiczne wydania powierzchni" in source
+    assert "Nowe wydanie nie usuwa poprzedniego" in source
     assert "Wiek najnowszych danych w kolejnych aktualizacjach" in source
     assert "Świeżość modelu" in source
     assert "🗺️ Parametr × horyzont" in source

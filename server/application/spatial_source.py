@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 import time
 from collections import OrderedDict
@@ -25,6 +27,8 @@ class SpatialSource(Protocol):
     def latest_pointer(self) -> dict[str, Any] | None: ...
 
     def latest_manifest(self) -> dict[str, Any] | None: ...
+
+    def release_history(self) -> dict[str, Any] | None: ...
 
     def surface(
         self,
@@ -107,6 +111,29 @@ class ObjectStoreSpatialSource:
         key = str(pointer["manifest_key"])
         try:
             return self._cached_immutable(f"json:{key}", lambda: self.repository.get_json(key))
+        except Exception:
+            return None
+
+    def release_history(self) -> dict[str, Any] | None:
+        pointer = self.latest_pointer()
+        if not pointer:
+            return None
+        key = str(pointer.get("history_key") or "")
+        if not key:
+            return None
+
+        def load() -> dict[str, Any]:
+            body = self.repository.store.get_bytes(key)
+            expected = str(pointer.get("history_checksum") or "")
+            if expected and hashlib.sha256(body).hexdigest() != expected:
+                raise RuntimeError("Serving release-history checksum mismatch.")
+            payload = json.loads(body.decode("utf-8"))
+            if payload.get("contract") != "smog-ai-serving-release-history":
+                raise RuntimeError("Unsupported Serving release-history contract.")
+            return dict(payload)
+
+        try:
+            return self._cached_immutable(f"json:{key}", load)
         except Exception:
             return None
 
@@ -259,6 +286,25 @@ class StaticSpatialSource:
 
     def latest_manifest(self) -> dict[str, Any] | None:
         return self._manifest
+
+    def release_history(self) -> dict[str, Any] | None:
+        if not self._manifest:
+            return None
+        release_id = self._manifest.get("release_id") or self._manifest.get(
+            "surface_set_id"
+        )
+        return {
+            "schema_version": "1.0",
+            "contract": "smog-ai-serving-release-history",
+            "active_release_id": release_id,
+            "releases": [
+                {
+                    "release_id": release_id,
+                    "generated_at": self._manifest.get("generated_at"),
+                    "surface_count": len(self._manifest.get("surfaces") or []),
+                }
+            ],
+        }
 
     def surface(
         self,

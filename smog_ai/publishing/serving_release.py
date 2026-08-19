@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +15,9 @@ from smog_ai.storage.local import LocalObjectStore
 
 RETENTION_CONFIRMATION = "PRUNE OLD SERVING RELEASES"
 RELEASE_PREFIX = "serving/releases/release="
+RELEASE_HISTORY_PREFIX = "serving/history/snapshots/"
+RELEASE_HISTORY_CONTRACT = "smog-ai-serving-release-history"
+RELEASE_HISTORY_LIMIT = 90
 
 
 def _transfer_category(key: str, manifest_key: str, pointer_key: str) -> str:
@@ -30,6 +35,172 @@ def _transfer_category(key: str, manifest_key: str, pointer_key: str) -> str:
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _json_bytes(payload: dict[str, Any]) -> bytes:
+    return (
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _safe_report(path: Path) -> dict[str, Any] | None:
+    for encoding in ("utf-8-sig", "utf-16"):
+        try:
+            payload = json.loads(path.read_text(encoding=encoding))
+        except (OSError, UnicodeError, ValueError, TypeError):
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return None
+
+
+def _report_timestamp(path: Path) -> str | None:
+    try:
+        parsed = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+    except OSError:
+        return None
+    return parsed.isoformat().replace("+00:00", "Z")
+
+
+def _local_release_history_seed(config: AppConfig) -> list[dict[str, Any]]:
+    """Recover safe legacy publication history from local transfer reports."""
+
+    root = config.paths.logs_dir.parent / "reports" / "digitalocean"
+    if not root.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for path in sorted(root.glob("*/03-publication.json")):
+        payload = _safe_report(path)
+        if payload is None:
+            continue
+        details = dict(payload.get("details") or {})
+        release_id = str(details.get("release_id") or "").strip()
+        if not release_id:
+            continue
+        rows.append(
+            {
+                "release_id": release_id,
+                "published_at": _report_timestamp(path),
+                "generated_at": None,
+                "surface_count": None,
+                "parameters": [],
+                "horizons_hours": [],
+                "freshness_status": None,
+                "transfer": {
+                    "objects_uploaded": int(details.get("objects_copied") or 0) + 1,
+                    "objects_reused": int(details.get("objects_reused") or 0),
+                    "bytes_uploaded": int(details.get("bytes_uploaded") or 0),
+                    "elapsed_seconds": details.get("elapsed_seconds"),
+                    "request_count": details.get("request_count"),
+                    "reuse_ratio": details.get("reuse_ratio"),
+                },
+                "source": "legacy_local_publication_report",
+            }
+        )
+    return rows
+
+
+def _history_from_pointer(repository: ArtifactRepository) -> list[dict[str, Any]]:
+    try:
+        pointer = repository.get_json(repository.layout.latest_spatial_pointer)
+        history_key = str(pointer.get("history_key") or "")
+        if not history_key:
+            return []
+        body = repository.store.get_bytes(history_key)
+        expected = str(pointer.get("history_checksum") or "")
+        if expected and _sha256(body) != expected:
+            return []
+        payload = json.loads(body.decode("utf-8"))
+        if payload.get("contract") != RELEASE_HISTORY_CONTRACT:
+            return []
+        return [dict(row) for row in list(payload.get("releases") or [])]
+    except (OSError, UnicodeError, ValueError, TypeError, KeyError):
+        return []
+
+
+def _manifest_history_entry(
+    manifest: dict[str, Any],
+    *,
+    published_at: str,
+    transfer: dict[str, Any],
+) -> dict[str, Any]:
+    surfaces = [dict(row) for row in list(manifest.get("surfaces") or [])]
+    operations = dict(manifest.get("operations") or {})
+    data = dict(operations.get("data") or {})
+    model_versions = sorted(
+        {
+            str(version)
+            for row in surfaces
+            for version in list(row.get("model_versions") or [])
+            if version
+        }
+    )
+    origins = sorted(
+        str(row.get("origin_time"))
+        for row in surfaces
+        if row.get("origin_time")
+    )
+    targets = sorted(
+        str(row.get("target_time"))
+        for row in surfaces
+        if row.get("target_time")
+    )
+    return {
+        "release_id": manifest.get("release_id"),
+        "published_at": published_at,
+        "generated_at": manifest.get("generated_at"),
+        "origin_start": origins[0] if origins else None,
+        "origin_end": origins[-1] if origins else None,
+        "target_start": targets[0] if targets else None,
+        "target_end": targets[-1] if targets else None,
+        "surface_count": len(surfaces),
+        "parameters": sorted(str(value) for value in manifest.get("parameters") or []),
+        "horizons_hours": sorted(
+            int(value) for value in manifest.get("horizons_hours") or []
+        ),
+        "freshness_status": data.get("status_at_publication"),
+        "fresh_threshold_hours": data.get("fresh_threshold_hours"),
+        "stale_threshold_hours": data.get("stale_threshold_hours"),
+        "measurement_age_hours": data.get("measurement_age_hours_at_publication"),
+        "collection_age_hours": data.get("collection_age_hours_at_publication"),
+        "model_versions": model_versions,
+        "transfer": transfer,
+        "source": "verified_serving_publication",
+    }
+
+
+def _merge_release_history(
+    *groups: list[dict[str, Any]],
+    limit: int = RELEASE_HISTORY_LIMIT,
+) -> list[dict[str, Any]]:
+    by_release: dict[str, dict[str, Any]] = {}
+    for group in groups:
+        for raw in group:
+            row = dict(raw)
+            release_id = str(row.get("release_id") or "").strip()
+            if not release_id:
+                continue
+            previous = by_release.get(release_id, {})
+            merged = dict(previous)
+            for key, value in row.items():
+                if value not in (None, "", [], {}):
+                    merged[key] = value
+            merged["release_id"] = release_id
+            by_release[release_id] = merged
+    return sorted(
+        by_release.values(),
+        key=lambda row: (
+            str(row.get("published_at") or row.get("generated_at") or ""),
+            str(row.get("release_id") or ""),
+        ),
+        reverse=True,
+    )[: max(1, int(limit))]
 
 
 def _release_keys(pointer: dict[str, Any], manifest: dict[str, Any]) -> list[str]:
@@ -149,6 +320,8 @@ def inspect_local_serving_release(
 def promote_serving_release(
     source: ArtifactRepository,
     destination: ArtifactRepository,
+    *,
+    history_seed: list[dict[str, Any]] | None = None,
 ) -> StageStats:
     """Promote a verified Serving v2 release, updating its pointer last.
 
@@ -182,7 +355,14 @@ def promote_serving_release(
     request_count = 1
     categories = {
         name: {"objects_uploaded": 0, "objects_reused": 0, "bytes_uploaded": 0}
-        for name in ("surfaces", "stats", "static", "manifest", "pointer")
+        for name in (
+            "surfaces",
+            "stats",
+            "static",
+            "manifest",
+            "history",
+            "pointer",
+        )
     }
     for key in _release_keys(pointer, manifest):
         body = source.store.get_bytes(key)
@@ -219,9 +399,88 @@ def promote_serving_release(
         category["objects_uploaded"] += 1
         category["bytes_uploaded"] += len(body)
 
+    # The history snapshot is immutable and referenced by the final Serving
+    # pointer.  An interrupted upload can therefore leave only an unreachable
+    # immutable object; readers never observe a half-written history.
+    published_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    transfer_before_pointer = {
+        "objects_uploaded": copied,
+        "objects_reused": skipped,
+        "bytes_uploaded": copied_bytes,
+        "request_count": request_count,
+    }
+    current_entry = _manifest_history_entry(
+        manifest,
+        published_at=published_at,
+        transfer=transfer_before_pointer,
+    )
+    history_rows = _merge_release_history(
+        list(history_seed or []),
+        _history_from_pointer(destination),
+        [current_entry],
+    )
+    history_payload = {
+        "schema_version": "1.0",
+        "contract": RELEASE_HISTORY_CONTRACT,
+        "generated_at": published_at,
+        "active_release_id": pointer.get("release_id"),
+        "retention": {
+            "history_entries": RELEASE_HISTORY_LIMIT,
+            "surface_release_retention_independent": True,
+        },
+        "releases": history_rows,
+        "privacy": {
+            "raw_data_included": False,
+            "training_data_included": False,
+            "model_binaries_included": False,
+            "local_paths_included": False,
+            "secret_values_included": False,
+        },
+    }
+    history_bytes = _json_bytes(history_payload)
+    history_checksum = _sha256(history_bytes)
+    history_key = f"{RELEASE_HISTORY_PREFIX}sha256={history_checksum}.json"
+    existing_history = destination.store.head(history_key)
+    request_count += 1
+    existing_history_checksum = None
+    if existing_history is not None:
+        existing_history_checksum = (
+            existing_history.metadata.get("sha256") or existing_history.etag
+        )
+    if (
+        existing_history_checksum
+        and existing_history_checksum.strip('"') == history_checksum
+    ):
+        skipped += 1
+        categories["history"]["objects_reused"] += 1
+    else:
+        destination.store.put_bytes(
+            history_key,
+            history_bytes,
+            content_type="application/json; charset=utf-8",
+            metadata={"sha256": history_checksum, "serving-contract": "history-v1"},
+            immutable=True,
+        )
+        request_count += 1
+        remote_history = destination.store.get_bytes(history_key)
+        request_count += 1
+        if _sha256(remote_history) != history_checksum:
+            raise RuntimeError("Remote release-history checksum verification failed.")
+        copied += 1
+        copied_bytes += len(history_bytes)
+        categories["history"]["objects_uploaded"] += 1
+        categories["history"]["bytes_uploaded"] += len(history_bytes)
+
     # Atomic publication boundary: readers cannot observe the release until all
-    # immutable objects and the manifest have been uploaded and verified.
-    pointer_bytes = source.store.get_bytes(pointer_key)
+    # immutable objects, manifest and history have been uploaded and verified.
+    # The only mutable object is written last.
+    published_pointer = {
+        **pointer,
+        "history_key": history_key,
+        "history_checksum": history_checksum,
+        "history_count": len(history_rows),
+    }
+    pointer_bytes = _json_bytes(published_pointer)
     destination.store.put_bytes(
         pointer_key,
         pointer_bytes,
@@ -248,6 +507,9 @@ def promote_serving_release(
         details={
             "release_id": pointer.get("release_id"),
             "manifest_key": manifest_key,
+            "history_key": history_key,
+            "history_checksum": history_checksum,
+            "history_count": len(history_rows),
             "objects_copied": copied,
             "objects_reused": skipped,
             "bytes_uploaded": total_bytes,
@@ -269,7 +531,11 @@ def promote_serving_release(
 def publish_local_serving_release(config: AppConfig, source_root: Path) -> StageStats:
     source = ArtifactRepository(LocalObjectStore(source_root))
     destination = create_artifact_repository(config)
-    return promote_serving_release(source, destination)
+    return promote_serving_release(
+        source,
+        destination,
+        history_seed=_local_release_history_seed(config),
+    )
 
 
 def plan_serving_release_retention(

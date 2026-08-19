@@ -5119,6 +5119,7 @@ with status_tab:
         st.dataframe(pd.DataFrame(training_rows), hide_index=True, width="stretch")
 
         collection_history = dict(operations.get("collection_history") or {})
+        release_history = dict(operations.get("release_history") or {})
         freshness_checks = pd.DataFrame(
             list(collection_history.get("freshness_checks") or [])
         )
@@ -5549,6 +5550,190 @@ with status_tab:
                 run_figure,
                 width="stretch",
                 config=PLOTLY_CHART_CONFIG,
+            )
+
+        st.markdown("#### Historia opublikowanych powierzchni Serving v2")
+        st.caption(
+            "Lekki indeks statystyczny jest zachowywany niezależnie od retencji "
+            "ciężkich plików powierzchni. Nowe wydanie nie usuwa poprzedniego "
+            "wpisu historycznego."
+        )
+        release_rows = pd.DataFrame(list(release_history.get("releases") or []))
+        if release_rows.empty:
+            st.info(
+                "Trwała historia wydań pojawi się po pierwszej publikacji "
+                "wykonanej przez kontrakt historii Serving v2."
+            )
+        else:
+            release_defaults = {
+                "release_id": None,
+                "published_at": None,
+                "generated_at": None,
+                "surface_count": None,
+                "freshness_status": "unknown",
+                "parameters": None,
+                "horizons_hours": None,
+                "model_versions": None,
+                "transfer": None,
+            }
+            for column, default in release_defaults.items():
+                if column not in release_rows.columns:
+                    release_rows[column] = default
+            release_rows["published_at"] = pd.to_datetime(
+                release_rows["published_at"], utc=True, errors="coerce"
+            )
+            release_rows["generated_at"] = pd.to_datetime(
+                release_rows["generated_at"], utc=True, errors="coerce"
+            )
+            release_rows["surface_count"] = pd.to_numeric(
+                release_rows["surface_count"], errors="coerce"
+            )
+
+            def _release_transfer_value(value: Any, key: str) -> float | None:
+                if not isinstance(value, dict):
+                    return None
+                number = pd.to_numeric(
+                    pd.Series([value.get(key)]), errors="coerce"
+                ).iloc[0]
+                return None if pd.isna(number) else float(number)
+
+            release_rows["transfer_mb"] = release_rows["transfer"].map(
+                lambda value: (
+                    None
+                    if _release_transfer_value(value, "bytes_uploaded") is None
+                    else round(
+                        float(_release_transfer_value(value, "bytes_uploaded") or 0)
+                        / 1_048_576,
+                        2,
+                    )
+                )
+            )
+            release_rows["objects_reused"] = release_rows["transfer"].map(
+                lambda value: _release_transfer_value(value, "objects_reused")
+            )
+            release_rows["parameters_text"] = release_rows["parameters"].map(
+                lambda value: ", ".join(map(str, value))
+                if isinstance(value, list)
+                else ""
+            )
+            release_rows["model_count"] = release_rows["model_versions"].map(
+                lambda value: len(value) if isinstance(value, list) else None
+            )
+
+            active_release = str(
+                release_history.get("active_release_id")
+                or operations.get("release_id")
+                or ""
+            )
+            newest_release = release_rows.sort_values(
+                ["published_at", "generated_at"],
+                ascending=False,
+                na_position="last",
+            ).iloc[0]
+            release_metric_columns = st.columns(4)
+            release_metric_columns[0].metric(
+                "Wpisy historii", int(len(release_rows))
+            )
+            release_metric_columns[1].metric(
+                "Aktywny release",
+                active_release[:18] + "..." if len(active_release) > 21 else active_release,
+            )
+            release_metric_columns[2].metric(
+                "Powierzchnie w najnowszym",
+                int(newest_release["surface_count"])
+                if not pd.isna(newest_release["surface_count"])
+                else "brak danych historycznych",
+            )
+            release_metric_columns[3].metric(
+                "Transfer najnowszego",
+                (
+                    f"{float(newest_release['transfer_mb']):.2f} MB"
+                    if not pd.isna(newest_release["transfer_mb"])
+                    else "brak danych historycznych"
+                ),
+            )
+
+            release_colors = {
+                "fresh": "#43e0c0",
+                "warning": "#ffbf69",
+                "stale": "#ff6b6b",
+                "missing": "#d86cff",
+                "unknown": "#7f8da3",
+            }
+            release_figure = go.Figure()
+            release_figure.add_bar(
+                x=release_rows["published_at"],
+                y=release_rows["surface_count"],
+                marker_color=[
+                    release_colors.get(str(status), "#7f8da3")
+                    for status in release_rows["freshness_status"]
+                ],
+                customdata=release_rows[
+                    [
+                        "release_id",
+                        "freshness_status",
+                        "parameters_text",
+                        "transfer_mb",
+                        "model_count",
+                    ]
+                ],
+                hovertemplate=(
+                    "release=%{customdata[0]}<br>"
+                    "powierzchnie=%{y}<br>"
+                    "świeżość=%{customdata[1]}<br>"
+                    "parametry=%{customdata[2]}<br>"
+                    "transfer=%{customdata[3]} MB<br>"
+                    "wersje modeli=%{customdata[4]}<extra></extra>"
+                ),
+                name="Powierzchnie",
+            )
+            release_figure.update_layout(
+                title="Kolejne publiczne wydania powierzchni",
+                xaxis_title="Czas publikacji",
+                yaxis_title="Liczba powierzchni",
+                height=390,
+                showlegend=False,
+            )
+            st.plotly_chart(
+                release_figure,
+                width="stretch",
+                config=PLOTLY_CHART_CONFIG,
+            )
+            release_table = release_rows.copy()
+            release_table["published_at"] = release_table["published_at"].map(
+                lambda value: "—" if pd.isna(value) else _local_time(value)
+            )
+            release_table["generated_at"] = release_table["generated_at"].map(
+                lambda value: "—" if pd.isna(value) else _local_time(value)
+            )
+            st.dataframe(
+                release_table[
+                    [
+                        "published_at",
+                        "generated_at",
+                        "release_id",
+                        "surface_count",
+                        "freshness_status",
+                        "parameters_text",
+                        "model_count",
+                        "transfer_mb",
+                        "objects_reused",
+                    ]
+                ].rename(
+                    columns={
+                        "published_at": "Opublikowano",
+                        "generated_at": "Wygenerowano",
+                        "release_id": "Release",
+                        "surface_count": "Powierzchnie",
+                        "freshness_status": "Świeżość",
+                        "parameters_text": "Parametry",
+                        "model_count": "Wersje modeli",
+                        "transfer_mb": "Wysłano [MB]",
+                        "objects_reused": "Obiekty użyte ponownie",
+                    }
+                ),
+                hide_index=True,
+                width="stretch",
             )
 
         models = list(operations.get("models") or [])

@@ -14,7 +14,7 @@ param(
     [switch]$FillMissingRanges,
     [switch]$SkipGiosCurrent,
     [switch]$SkipImgwCurrent,
-    [int]$MaxValidationErrors=100,
+    [int]$MaxValidationErrors=150,
     [switch]$SkipCleanup,
     [int]$KeepTrainingQuick=2,
     [int]$KeepTrainingFull=3,

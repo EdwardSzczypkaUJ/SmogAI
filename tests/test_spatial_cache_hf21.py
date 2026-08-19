@@ -5,6 +5,8 @@ from collections import Counter
 from types import SimpleNamespace
 
 from server.application.spatial_source import ObjectStoreSpatialSource
+from smog_ai.artifacts.repository import ArtifactRepository
+from smog_ai.storage.local import MemoryObjectStore
 
 
 class CountingRepository:
@@ -66,3 +68,38 @@ def test_immutable_cache_is_bounded_and_evicts_least_recently_used() -> None:
 
     assert len(source._immutable_cache) <= 3
     assert repository.calls["surface-0.json.gz"] == 2
+
+
+def test_release_history_is_loaded_from_checksum_verified_pointer() -> None:
+    repository = ArtifactRepository(MemoryObjectStore())
+    history_key = "serving/history/snapshots/sha256=test.json"
+    history = repository.put_json(
+        history_key,
+        {
+            "contract": "smog-ai-serving-release-history",
+            "active_release_id": "release-2",
+            "releases": [
+                {"release_id": "release-2"},
+                {"release_id": "release-1"},
+            ],
+        },
+    )
+    repository.put_json(
+        repository.layout.latest_spatial_pointer,
+        {
+            "contract": "smog-ai-serving-pointer",
+            "release_id": "release-2",
+            "history_key": history_key,
+            "history_checksum": history.checksum,
+        },
+    )
+    source = ObjectStoreSpatialSource(repository, cache_ttl_seconds=0)
+
+    payload = source.release_history()
+
+    assert payload is not None
+    assert payload["active_release_id"] == "release-2"
+    assert [row["release_id"] for row in payload["releases"]] == [
+        "release-2",
+        "release-1",
+    ]

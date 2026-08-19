@@ -1090,7 +1090,7 @@ class Runner:
                 if hint not in run_type or child_started < automation_started - 5:
                     continue
                 rows.append((path, payload))
-            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            except (OSError, TypeError, ValueError):
                 continue
         return sorted(
             rows,
@@ -1419,6 +1419,8 @@ class Runner:
         # explicit for every automation child, not only for the wrapper.
         child_env["PYTHONUTF8"] = "1"
         child_env["PYTHONIOENCODING"] = "utf-8:backslashreplace"
+        runtime_timing_path = self.run_dir / f"{log_name}.runtime.json"
+        child_env["SMOG_AI_RUNTIME_TIMING_PATH"] = str(runtime_timing_path)
         with out_path.open("wb") as out, err_path.open("wb") as err:
             proc = subprocess.Popen(args, cwd=self.project, env=child_env, stdout=out, stderr=err,
                                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0)
@@ -1527,6 +1529,15 @@ class Runner:
                 except Exception:
                     continue
         record["result_summary"] = compact_result(result_payload)
+        if runtime_timing_path.exists():
+            try:
+                record["runtime_initialization"] = json.loads(
+                    runtime_timing_path.read_text(encoding="utf-8-sig")
+                )
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                record["runtime_initialization"] = {
+                    "status": "unavailable",
+                }
         result_details = (result_payload or {}).get("details") or {}
         if isinstance(result_details, dict) and result_details.get("completed_models"):
             completed_models = list(result_details.get("completed_models") or [])
@@ -2229,7 +2240,7 @@ def main() -> int:
     )
     ap.add_argument("--skip-gios-current", action="store_true")
     ap.add_argument("--skip-imgw-current", action="store_true")
-    ap.add_argument("--max-validation-errors", type=int, default=100,
+    ap.add_argument("--max-validation-errors", type=int, default=150,
                     help="Maksymalna liczba błędów jakości przy kodzie 4; -1 = bez limitu")
     ap.add_argument("--run-id")
     ap.add_argument("--resume", action="store_true")

@@ -31,13 +31,22 @@ def create_db_engine(config: AppConfig) -> Engine:
     return engine
 
 
-def init_database(engine: Engine) -> None:
+def init_database(engine: Engine, *, verify_integrity: bool = True) -> None:
+    """Create missing schema objects and optionally verify the whole SQLite file.
+
+    ``PRAGMA quick_check`` scans the complete database.  It is appropriate for
+    an explicit database preflight, but running it in every short-lived CLI
+    process made one Serving cycle scan the same multi-gigabyte database more
+    than ten times.
+    """
+
     try:
         Base.metadata.create_all(engine)
-        with engine.begin() as connection:
-            result = connection.execute(text("PRAGMA quick_check")).scalar_one()
-            if result != "ok":
-                raise DatabaseError(f"SQLite quick_check returned: {result}")
+        if verify_integrity:
+            with engine.begin() as connection:
+                result = connection.execute(text("PRAGMA quick_check")).scalar_one()
+                if result != "ok":
+                    raise DatabaseError(f"SQLite quick_check returned: {result}")
     except Exception as exc:
         if isinstance(exc, DatabaseError):
             raise

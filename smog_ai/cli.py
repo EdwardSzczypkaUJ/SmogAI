@@ -172,10 +172,34 @@ def _select_digitalocean_spaces_destination(config: AppConfig) -> dict[str, str]
 
 
 def _runtime(config_path: Path | None, env_path: Path | None, task: str) -> tuple[AppConfig, Engine]:
+    started = time.perf_counter()
     config = load_config(config_path, env_path)
+    config_loaded = time.perf_counter()
     configure_logging(config.paths.logs_dir, task_name=task)
     engine = create_db_engine(config)
-    init_database(engine)
+    engine_created = time.perf_counter()
+    # A full SQLite quick_check is deliberately reserved for explicit init-db.
+    # Operational commands still create missing schema objects, but do not scan
+    # the complete multi-gigabyte database before every pipeline stage.
+    verify_integrity = task == "init-db"
+    init_database(engine, verify_integrity=verify_integrity)
+    initialized = time.perf_counter()
+    timing_path = os.getenv("SMOG_AI_RUNTIME_TIMING_PATH")
+    if timing_path:
+        payload = {
+            "task": task,
+            "verify_integrity": verify_integrity,
+            "config_load_seconds": round(config_loaded - started, 6),
+            "engine_create_seconds": round(engine_created - config_loaded, 6),
+            "schema_init_seconds": round(initialized - engine_created, 6),
+            "total_seconds": round(initialized - started, 6),
+        }
+        destination = Path(timing_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
     return config, engine
 
 

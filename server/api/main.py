@@ -511,9 +511,29 @@ def public_system_status() -> JSONResponse:
         )
     payload["release_id"] = (manifest or {}).get("release_id")
     payload["surface_set_id"] = (manifest or {}).get("surface_set_id")
+    history_loader = getattr(query_service.spatial_source, "release_history", None)
+    release_history = history_loader() if callable(history_loader) else None
+    if release_history:
+        payload["release_history"] = release_history
     return JSONResponse(
         content=payload,
         headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/api/v1/releases/history")
+def public_release_history() -> JSONResponse:
+    """Return the sanitised append-only history referenced by the active pointer."""
+
+    if query_service.spatial_source is None:
+        raise HTTPException(status_code=404, detail="Spatial surfaces are disabled")
+    history_loader = getattr(query_service.spatial_source, "release_history", None)
+    payload = history_loader() if callable(history_loader) else None
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Serving release history is unavailable")
+    return JSONResponse(
+        content=payload,
+        headers={"Cache-Control": "public, max-age=30, stale-while-revalidate=120"},
     )
 
 
