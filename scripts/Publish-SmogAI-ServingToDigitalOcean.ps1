@@ -45,15 +45,23 @@ foreach ($Name in $OverrideNames) {
 }
 try {
     Write-Host 'E1/4 Data freshness report' -ForegroundColor Cyan
+    # HF21_CANONICAL_FRESHNESS_HISTORY_V1
+    $CanonicalFreshnessRoot = Join-Path $RuntimeRoot 'reports\freshness'
+    $PublicationFreshnessRoot = Join-Path $ReportRoot 'freshness'
+    New-Item -ItemType Directory -Path $CanonicalFreshnessRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $PublicationFreshnessRoot -Force | Out-Null
     & $Python -m smog_ai data-freshness-report `
-        --output-dir (Join-Path $ReportRoot 'freshness') `
+        --output-dir $CanonicalFreshnessRoot `
         --threshold-hours $FreshnessThresholdHours `
         --stale-threshold-hours $FreshnessStaleThresholdHours `
         --config $Config --env-file $EnvFile |
         Tee-Object -FilePath (Join-Path $ReportRoot '01-data-freshness.json')
     if ($LASTEXITCODE -notin @(0, 4)) { throw "Freshness report failed: $LASTEXITCODE" }
 
-    $FreshnessPath = Join-Path $ReportRoot 'freshness\data-freshness-latest.json'
+    $FreshnessPath = Join-Path $CanonicalFreshnessRoot 'data-freshness-latest.json'
+    Copy-Item -LiteralPath $FreshnessPath `
+        -Destination (Join-Path $PublicationFreshnessRoot 'data-freshness-latest.json') `
+        -Force
     $Freshness = Get-Content -LiteralPath $FreshnessPath -Raw | ConvertFrom-Json
     if ($Freshness.overall_status -eq 'warning') {
         Write-Warning ("Data freshness status: {0}. Review: {1}" -f `

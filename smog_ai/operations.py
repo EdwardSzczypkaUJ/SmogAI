@@ -386,6 +386,71 @@ def _freshness_check_history(config: AppConfig, *, limit: int = 30) -> list[dict
     return sorted(history, key=lambda row: str(row.get("generated_at") or ""))
 
 
+# HF21_CURRENT_COLLECTION_HISTORY_V1
+def _freshness_history_with_current(
+    config: AppConfig,
+    source_freshness: list[dict[str, Any]],
+    generated: datetime,
+    *,
+    limit: int = 60,
+) -> list[dict[str, Any]]:
+    """Merge persisted reports with the source state used by this release."""
+
+    fresh_hours = float(config.operations.freshness_hours)
+    stale_hours = float(config.operations.freshness_stale_hours)
+    rows = list(_freshness_check_history(config, limit=max(1, limit // 2)))
+    generated_at = _iso(generated)
+    for source_row in source_freshness:
+        if not source_row.get("measurement_end") and not source_row.get(
+            "last_collection_at"
+        ):
+            continue
+        measurement_age = _safe_number(
+            source_row.get("measurement_age_hours_at_publication")
+        )
+        collection_age = _safe_number(
+            source_row.get("collection_age_hours_at_publication")
+        )
+        measurement_status = _freshness(measurement_age, fresh_hours, stale_hours)
+        collection_status = _freshness(collection_age, fresh_hours, stale_hours)
+        rows.append(
+            {
+                "generated_at": generated_at,
+                "source": source_row.get("source"),
+                "status": _worst_freshness(measurement_status, collection_status),
+                "maximum_age_hours": measurement_age,
+                "maximum_measurement_age_hours": measurement_age,
+                "maximum_collection_age_hours": collection_age,
+                "measurement_status": measurement_status,
+                "collection_status": collection_status,
+                "fresh_threshold_hours": fresh_hours,
+                "stale_threshold_hours": stale_hours,
+                "threshold_hours": fresh_hours,
+                "parameter_count": None,
+                "valid_rows": None,
+                "last_collected_at": source_row.get("last_collection_at"),
+                "measurement_end": source_row.get("measurement_end"),
+                "release_snapshot": True,
+            }
+        )
+
+    deduplicated: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        key = (
+            str(row.get("generated_at") or ""),
+            str(row.get("source") or "").upper(),
+        )
+        deduplicated[key] = row
+    ordered = sorted(
+        deduplicated.values(),
+        key=lambda row: (
+            str(row.get("generated_at") or ""),
+            str(row.get("source") or ""),
+        ),
+    )
+    return ordered[-limit:]
+
+
 def _training_outcome(
     run: TrainingRun,
     summary: dict[str, Any],
@@ -590,6 +655,11 @@ def build_public_operations_status(
         )
 
     source_freshness = _source_freshness_at_publication(session, generated)
+    freshness_history = _freshness_history_with_current(
+        config,
+        source_freshness,
+        generated,
+    )
     successful_source_collections = [
         _state_datetime(
             session,
@@ -668,7 +738,7 @@ def build_public_operations_status(
         },
         "collection_history": {
             "runs": public_collection_runs,
-            "freshness_checks": _freshness_check_history(config),
+            "freshness_checks": freshness_history,
         },
         "serving": {
             "surface_count": int(surface_count),

@@ -811,6 +811,17 @@ def stages_for(
                             description="Kontrola pokrycia po uzupełnieniu historii."))
     if profile == "serving":
         stages += [
+        # HF21_FRESHNESS_BEFORE_MANIFEST_V1
+            Stage(
+                "Raport świeżości danych",
+                "data-freshness-report",
+                (
+                    "--threshold-hours", "14",
+                    "--stale-threshold-hours", "22",
+                ),
+                weight=1,
+                timeout_minutes=30,
+            ),
             Stage("Budowa cech", "build-features", weight=4, timeout_minutes=240, progress_hint="feature"),
             Stage("Generowanie prognoz stacyjnych", "predict", weight=4, timeout_minutes=180, progress_hint="predict"),
             Stage(
@@ -829,16 +840,6 @@ def stages_for(
             Stage(
                 "Kontrola lokalnego Object Store",
                 "storage-health",
-                weight=1,
-                timeout_minutes=30,
-            ),
-            Stage(
-                "Raport świeżości danych",
-                "data-freshness-report",
-                (
-                    "--threshold-hours", "14",
-                    "--stale-threshold-hours", "22",
-                ),
                 weight=1,
                 timeout_minutes=30,
             ),
